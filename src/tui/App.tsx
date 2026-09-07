@@ -559,6 +559,14 @@ export function App(): React.JSX.Element {
   useInput((input, key) => {
     if (input.startsWith("[<")) return; // 마우스 시퀀스, 위 stdin 리스너가 처리
 
+    // ink는 Ctrl+letter를 input="l" + key.ctrl로 넘긴다. 아래 세 모드는 남은 입력을 전부
+    // 삼키므로 여기서 먼저 잡지 않으면 프레임이 깨졌을 때 다시 그릴 방법이 없다.
+    // (확인창에서는 "l"이 yes 버퍼에 섞이거나 창이 닫혔다.)
+    if (key.ctrl && input === "l") {
+      forceRedraw();
+      return;
+    }
+
     if (confirm !== null) {
       if (key.escape) setConfirm(null);
       else if (confirm.plan.changes === 0) {
@@ -616,7 +624,6 @@ export function App(): React.JSX.Element {
     else if (input === "D") startRemove();
     else if (input === "u") setShowUsage((v) => !v);
     else if (input === "?") setShowHelp((v) => !v);
-    else if (key.ctrl && input === "l") forceRedraw();
     else if (input === "q") {
       cleanupFromTui();
       exit();
