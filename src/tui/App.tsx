@@ -388,16 +388,23 @@ export function App(): React.JSX.Element {
         const killIds = new Set(plan.windows.map((w) => w.windowId));
         // 세션 이름이 아니라 창 단위로 본다. 대상 창을 죽여도 다른 창이 남는 세션은 살아남는다.
         const alive = sessionsAfterKill(listPanes(), killIds);
+        let moveTo: string | undefined;
         if (here && !alive.has(here)) {
           const other = [...alive][0];
           if (!other) {
             setStatusMsg("마지막 창이라 지울 수 없습니다. 다른 세션을 먼저 여세요");
             return;
           }
-          // detach-on-destroy 기본값 때문에 자기 세션이 죽으면 클라이언트가 떨어진다. 먼저 옮긴다.
-          switchClient(other);
+          // detach-on-destroy 기본값 때문에 자기 세션이 죽으면 클라이언트가 떨어진다.
+          // 다만 여기서 바로 옮기면 git이 삭제를 거부했을 때 화면만 엉뚱하게 튄다.
+          // 창을 죽이기 직전(beforeKill)에 옮긴다.
+          moveTo = other;
         }
-        const result = wtRemove(plan, { force, currentWindowId: currentWindowId ?? undefined });
+        const result = wtRemove(plan, {
+          force,
+          currentWindowId: currentWindowId ?? undefined,
+          beforeKill: moveTo ? () => switchClient(moveTo) : undefined,
+        });
         const suffix = result.skippedReason ? ` — ${result.skippedReason}` : "";
         setStatusMsg(`removed: ${basename(result.path)} (창 ${result.killedWindows}개)${suffix}`);
       } catch (err) {

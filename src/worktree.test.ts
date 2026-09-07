@@ -1,13 +1,31 @@
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   resolveWorktreeTarget,
   sessionsAfterKill,
   uniqueSessionName,
   unopenedWorktrees,
   windowsInWorktree,
+  wtRemove,
+  type WtRemovePlan,
 } from "./worktree.js";
-import type { WorktreeEntry } from "./git.js";
-import type { PaneInfo } from "./tmux.js";
+import { worktreeRemove, type WorktreeEntry } from "./git.js";
+import { killWindow, listPanes, switchClient, type PaneInfo } from "./tmux.js";
+import { setHiveHomeOverride } from "./paths.js";
+
+// wtRemove만 실제 git/tmux를 건드린다. 그 네 개만 갈아끼우고 나머지는 원본을 쓴다.
+vi.mock("./git.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./git.js")>()),
+  worktreeRemove: vi.fn(),
+}));
+vi.mock("./tmux.js", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./tmux.js")>()),
+  killWindow: vi.fn(),
+  listPanes: vi.fn(),
+  switchClient: vi.fn(),
+}));
 
 function pane(overrides: Partial<PaneInfo>): PaneInfo {
   return {
@@ -161,5 +179,74 @@ describe("sessionsAfterKill", () => {
       pane({ sessionName: "a", windowId: "@1", paneId: "%2" }),
     ];
     expect(sessionsAfterKill(panes, new Set(["@1"])).size).toBe(0);
+  });
+});
+
+describe("wtRemove", () => {
+  const plan: WtRemovePlan = {
+    repoRoot: "/repo",
+    entry: { path: "/repo/wt/feat", branch: "feat", head: "abc" },
+    changes: 0,
+    windows: [{ windowId: "@1", sessionName: "feat" }],
+  };
+
+  beforeEach(() => {
+    vi.mocked(worktreeRemove).mockReset();
+    vi.mocked(killWindow).mockReset();
+    vi.mocked(switchClient).mockReset();
+    // rememberRepo가 ~/.hive에 쓰지 않도록 임시 디렉토리로 돌린다.
+    setHiveHomeOverride(mkdtempSync(join(tmpdir(), "hive-wtrm-")));
+    // 대상 창(@1)을 죽여도 다른 세션(other)이 남는 배치.
+    vi.mocked(listPanes).mockReturnValue([
+      pane({ sessionName: "feat", windowId: "@1" }),
+      pane({ sessionName: "other", windowId: "@2" }),
+    ]);
+  });
+
+  it("git이 삭제를 거부하면 창도 안 죽이고 beforeKill도 안 부른다", () => {
+    vi.mocked(worktreeRemove).mockImplementation(() => {
+      throw new Error("worktree is dirty");
+    });
+    const beforeKill = vi.fn();
+
+    expect(() => wtRemove(plan, { force: false, beforeKill })).toThrow("worktree is dirty");
+    expect(beforeKill).not.toHaveBeenCalled();
+    expect(killWindow).not.toHaveBeenCalled();
+  });
+
+  it("커밋 안 된 변경이 있으면 force 없이는 git까지 가지 않는다", () => {
+    const beforeKill = vi.fn();
+    expect(() => wtRemove({ ...plan, changes: 3 }, { force: false, beforeKill })).toThrow(/3개/);
+    expect(worktreeRemove).not.toHaveBeenCalled();
+    expect(beforeKill).not.toHaveBeenCalled();
+    expect(killWindow).not.toHaveBeenCalled();
+  });
+
+  it("git 삭제가 끝난 뒤에 beforeKill을 부르고 그다음 창을 죽인다", () => {
+    const order: string[] = [];
+    vi.mocked(worktreeRemove).mockImplementation(() => {
+      order.push("git");
+    });
+    vi.mocked(killWindow).mockImplementation(() => {
+      order.push("kill");
+    });
+
+    const result = wtRemove(plan, { force: false, beforeKill: () => order.push("beforeKill") });
+
+    expect(order).toEqual(["git", "beforeKill", "kill"]);
+    expect(result.killedWindows).toBe(1);
+    expect(result.skippedReason).toBeUndefined();
+  });
+
+  it("남는 세션이 없으면 창을 남기고 beforeKill도 안 부른다", () => {
+    vi.mocked(listPanes).mockReturnValue([pane({ sessionName: "feat", windowId: "@1" })]);
+    const beforeKill = vi.fn();
+
+    const result = wtRemove(plan, { force: false, beforeKill });
+
+    expect(worktreeRemove).toHaveBeenCalledTimes(1);
+    expect(beforeKill).not.toHaveBeenCalled();
+    expect(killWindow).not.toHaveBeenCalled();
+    expect(result.skippedReason).toBeDefined();
   });
 });

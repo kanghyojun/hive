@@ -253,7 +253,7 @@ export interface WtRemoveResult {
 // git을 먼저 부른다. git이 거부하면 tmux는 아무것도 안 건드린 상태로 남는다.
 export function wtRemove(
   plan: WtRemovePlan,
-  opts: { force: boolean; currentWindowId?: string }
+  opts: { force: boolean; currentWindowId?: string; beforeKill?: () => void }
 ): WtRemoveResult {
   if (plan.changes > 0 && !opts.force) {
     throw new Error(`커밋 안 된 변경이 ${plan.changes}개 있습니다. --force로 지우세요`);
@@ -269,6 +269,10 @@ export function wtRemove(
   if (sessionsAfterKill(listPanes(), killIds).size === 0) {
     return { path: plan.entry.path, killedWindows: 0, skippedReason: "마지막 창이라 창은 남겼습니다" };
   }
+
+  // 창을 실제로 죽이기 직전에만 부른다. git이 거부하면 여기까지 오지 않으므로
+  // 호출자가 화면(붙어 있는 세션)을 건드리는 일도 같이 취소된다.
+  opts.beforeKill?.();
 
   // 자기 창이 먼저 죽으면 이 프로세스가 끝나 나머지가 안 죽는다.
   const ordered = [...plan.windows].sort(
