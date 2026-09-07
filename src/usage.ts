@@ -1,5 +1,6 @@
 import { closeSync, fstatSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
-import { join } from "node:path";
+import { extname, isAbsolute, join, normalize, resolve } from "node:path";
+import { homedir } from "node:os";
 import stringWidth from "string-width";
 import { claudeUsageSnapshotPath } from "./paths.js";
 import { codexHome } from "./hookInstall.js";
@@ -56,15 +57,29 @@ export function parseClaudeSnapshot(raw: string): AgentUsage | null {
   return { agent: "claude", windows, updatedAt: toMs(obj.updated_at) };
 }
 
+// claude-hud 0.7.1의 src/claude-config-dir.ts와 같은 규칙이어야 한다. 해석이 갈리면
+// hud가 쓴 파일을 hive가 못 찾아 사용량이 통째로 안 보인다.
+function claudeConfigDir(): string {
+  const home = homedir();
+  const env = process.env.CLAUDE_CONFIG_DIR?.trim();
+  if (!env) return join(home, ".claude");
+  if (env === "~") return home;
+  if (env.startsWith("~/") || env.startsWith("~\\")) return resolve(join(home, env.slice(2)));
+  return resolve(env);
+}
+
 // hud 설정을 읽는 이유는 경로를 두 곳에 적지 않으려는 것이다. hive는 이 파일을 쓰지 않는다.
 function hudExternalUsagePath(): string | undefined {
-  const configDir = process.env.CLAUDE_CONFIG_DIR || join(process.env.HOME ?? "/root", ".claude");
   try {
-    const raw = JSON.parse(readFileSync(join(configDir, "plugins", "claude-hud", "config.json"), "utf8")) as {
-      display?: { externalUsageWritePath?: unknown };
-    };
+    const raw = JSON.parse(
+      readFileSync(join(claudeConfigDir(), "plugins", "claude-hud", "config.json"), "utf8")
+    ) as { display?: { externalUsageWritePath?: unknown } };
     const path = raw.display?.externalUsageWritePath;
-    return typeof path === "string" && path ? path : undefined;
+    if (typeof path !== "string" || !path) return undefined;
+    // hud는 절대경로이면서 .json인 것만 실제로 쓴다(resolveSnapshotWritePath).
+    // 그 조건을 안 맞추면 hud가 안 쓴 자리를 가리키게 되므로 여기서도 같이 거른다.
+    if (!isAbsolute(path) || extname(path).toLowerCase() !== ".json") return undefined;
+    return normalize(path);
   } catch {
     return undefined;
   }
