@@ -15,6 +15,7 @@ import {
   dbPath,
   ensureDirs,
   hiveHome,
+  codexHookScriptPath,
   hookScriptPath,
   logsDir,
   selfCommand,
@@ -23,7 +24,7 @@ import {
 } from "./paths.js";
 import { setPaneOverride, setTmuxSocketOverride, listPanes, serverInfo } from "./tmux.js";
 import { hideSidebar, showSidebar, toggleSidebar, cleanupFromTui } from "./sidebar.js";
-import { installHooks, statusHooks, uninstallHooks } from "./hookInstall.js";
+import { AGENT_KINDS, installHooks, statusHooks, uninstallHooks, type AgentKind } from "./hookInstall.js";
 import { createInitScript, listWorktrees, wtNew, wtRunInit } from "./worktree.js";
 import { resolveRepo } from "./git.js";
 import { openDb } from "./db.js";
@@ -79,30 +80,70 @@ sidebar
   .command("toggle")
   .action(() => toggleSidebar());
 
-const hook = program.command("hook").description("Claude Code hook 등록 관리");
+// --agent를 안 주면 claude와 codex 둘 다 대상으로 한다.
+function parseAgents(value: string | undefined): AgentKind[] | undefined {
+  if (!value || value === "all") return undefined;
+  const agents = value.split(",").map((s) => s.trim()).filter(Boolean);
+  for (const a of agents) {
+    if (!AGENT_KINDS.includes(a as AgentKind)) {
+      throw new Error(`모르는 agent입니다: ${a} (${AGENT_KINDS.join(", ")}, all 중 하나)`);
+    }
+  }
+  return agents as AgentKind[];
+}
+
+const hook = program.command("hook").description("Claude Code / Codex hook 등록 관리");
 hook
   .command("install")
-  .option("--settings <path>", "settings.json 경로")
+  .option("--agent <kinds>", "claude, codex, all (기본: all)")
+  .option("--settings <path>", "Claude settings.json 경로")
+  .option("--codex-hooks <path>", "Codex hooks.json 경로")
   .option("--dry-run", "실제로 쓰지 않고 결과만 표시")
   .action((opts) => {
-    const result = installHooks({ settingsPath: opts.settings, dryRun: opts.dryRun });
-    console.log(JSON.stringify(result, null, 2));
+    const results = installHooks({
+      agents: parseAgents(opts.agent),
+      settingsPath: opts.settings,
+      codexHooksPath: opts.codexHooks,
+      dryRun: opts.dryRun,
+    });
+    console.log(JSON.stringify(results, null, 2));
+    if (results.some((r) => r.agent === "codex")) {
+      console.log("codex는 hooks.json 등록만으로 돌지 않습니다. codex를 새로 띄워 hook 신뢰를 승인하세요.");
+      console.log("승인 여부는 hive hook status --agent codex의 trusted 열에서 확인합니다.");
+    }
   });
 hook
   .command("uninstall")
-  .option("--settings <path>", "settings.json 경로")
+  .option("--agent <kinds>", "claude, codex, all (기본: all)")
+  .option("--settings <path>", "Claude settings.json 경로")
+  .option("--codex-hooks <path>", "Codex hooks.json 경로")
   .option("--dry-run", "실제로 쓰지 않고 결과만 표시")
   .action((opts) => {
-    const result = uninstallHooks({ settingsPath: opts.settings, dryRun: opts.dryRun });
-    console.log(JSON.stringify(result, null, 2));
+    const results = uninstallHooks({
+      agents: parseAgents(opts.agent),
+      settingsPath: opts.settings,
+      codexHooksPath: opts.codexHooks,
+      dryRun: opts.dryRun,
+    });
+    console.log(JSON.stringify(results, null, 2));
   });
 hook
   .command("status")
-  .option("--settings <path>", "settings.json 경로")
+  .option("--agent <kinds>", "claude, codex, all (기본: all)")
+  .option("--settings <path>", "Claude settings.json 경로")
+  .option("--codex-hooks <path>", "Codex hooks.json 경로")
+  .option("--codex-config <path>", "Codex config.toml 경로 (신뢰 승인 여부 확인용)")
   .action((opts) => {
-    const result = statusHooks({ settingsPath: opts.settings });
-    for (const { event, installed } of result) {
-      console.log(`${installed ? "installed" : "missing  "}\t${event}`);
+    const rows = statusHooks({
+      agents: parseAgents(opts.agent),
+      settingsPath: opts.settings,
+      codexHooksPath: opts.codexHooks,
+      codexConfigPath: opts.codexConfig,
+    });
+    for (const { agent, event, installed, trusted } of rows) {
+      const state = installed ? "installed" : "missing  ";
+      const trust = trusted === undefined ? "" : `\t${trusted ? "trusted" : "untrusted"}`;
+      console.log(`${agent}\t${state}${trust}\t${event}`);
     }
   });
 
@@ -214,6 +255,7 @@ program
     console.log(`execPath\t${node}`);
     console.log(`cli\t${cli}`);
     console.log(`hookScript\t${hookScriptPath()}`);
+    console.log(`codexHookScript\t${codexHookScriptPath()}`);
     console.log(`hiveHome\t${hiveHome()}`);
   });
 

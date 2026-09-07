@@ -3,12 +3,13 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Text, useApp, useInput, useStdin, useWindowSize } from "ink";
 import { openDb, type Db } from "../db.js";
 import { ingestAll } from "../spool.js";
-import { reduceAgent, looksLikePermissionPrompt, type AgentState } from "../state.js";
+import { reduceAgent, looksLikePermissionPrompt, AGENT_LABEL, type AgentKind, type AgentState } from "../state.js";
 import { resolveRepo, type RepoInfo } from "../git.js";
-import { buildRows, type Row, type ViewMode } from "../model.js";
+import { buildRows, resolvePaneAgents, type Row, type ViewMode } from "../model.js";
 import {
   capturePaneTail,
   listPanes,
+  listProcesses,
   selectWindow,
   serverInfo,
   switchClient,
@@ -63,6 +64,8 @@ export function App(): React.JSX.Element {
   const dbRef = useRef<Db | null>(null);
   const screenWaitingRef = useRef<Set<string>>(new Set());
   const lastScreenCheckRef = useRef(0);
+  // ps 전체 조회는 1초 tick마다 돌릴 만큼 싸지 않아서 화면 확인과 같은 주기로 갱신한다.
+  const paneAgentsRef = useRef<Map<string, AgentKind>>(new Map());
 
   const [rows, setRows] = useState<Row[]>([]);
   const [mode, setMode] = useState<ViewMode>(() => loadMode());
@@ -89,9 +92,10 @@ export function App(): React.JSX.Element {
       const now = Date.now();
       if (now - lastScreenCheckRef.current > SCREEN_CHECK_MS) {
         lastScreenCheckRef.current = now;
+        paneAgentsRef.current = resolvePaneAgents(panes, listProcesses());
         const nextWaiting = new Set<string>();
         for (const pane of panes) {
-          if (pane.paneCurrentCommand !== "claude") continue;
+          if (!paneAgentsRef.current.has(pane.paneId)) continue;
           const tail = capturePaneTail(pane.paneId, SCREEN_TAIL_LINES);
           if (looksLikePermissionPrompt(tail)) nextWaiting.add(pane.paneId);
         }
@@ -108,6 +112,7 @@ export function App(): React.JSX.Element {
         agents: db.listAgents(),
         repoByCwd,
         sleepMap: db.getSleepMap(server.startTime),
+        agentByPane: paneAgentsRef.current,
         now,
         mode,
         tmuxPid: server.pid,
@@ -301,6 +306,8 @@ export function App(): React.JSX.Element {
           );
         }
         const icon = (row.sleep ? "z" : "") + STATE_ICON[row.state];
+        // cc = claude code, co = codex. 어느 쪽도 아니면 자리만 비워 아이콘 열을 맞춘다.
+        const prefix = row.agent ? `${AGENT_LABEL[row.agent]} ` : "   ";
         const label = row.branch ? `${row.name} (${row.branch})` : row.name;
         return (
           <Text
@@ -310,7 +317,7 @@ export function App(): React.JSX.Element {
             color={row.sleep ? undefined : STATE_COLOR[row.state]}
             wrap="truncate-end"
           >
-            {indent}{icon} {label}
+            {indent}{prefix}{icon} {label}
           </Text>
         );
       })}

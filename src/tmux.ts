@@ -152,6 +152,34 @@ export function paneExists(paneId: string): boolean {
   return listPanes().some((p) => p.paneId === paneId);
 }
 
+export interface ProcInfo {
+  pid: string;
+  ppid: string;
+  comm: string;
+}
+
+// codex는 npm 래퍼(node)가 실제 바이너리를 자식으로 띄워서 #{pane_current_command}가 node로 나온다(실측).
+// pane 하나씩 ps를 부르면 tick마다 pane 수만큼 프로세스를 띄우게 되므로 전체 목록을 한 번에 받는다.
+export function listProcesses(): ProcInfo[] {
+  let out: string;
+  try {
+    out = execFileSync("ps", ["-eo", "pid=,ppid=,comm="], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+  } catch {
+    return [];
+  }
+  const procs: ProcInfo[] = [];
+  for (const line of out.split("\n")) {
+    const parts = line.trim().split(/\s+/);
+    if (parts.length < 3) continue;
+    const [pid, ppid, ...rest] = parts;
+    procs.push({ pid, ppid, comm: rest.join(" ") });
+  }
+  return procs;
+}
+
 export function selectWindow(windowId: string): void {
   tmux(["select-window", "-t", windowId]);
 }

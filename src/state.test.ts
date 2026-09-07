@@ -102,3 +102,20 @@ describe("looksLikePermissionPrompt", () => {
     expect(looksLikePermissionPrompt("hello world")).toBe(false);
   });
 });
+
+describe("codex Interrupt", () => {
+  it("사용자가 턴을 끊으면 done으로 떨어뜨린다", () => {
+    const working = reduceAgent(undefined, ev("PreToolUse", { tool_name: "shell" }, 1000));
+    expect(working.state).toBe("working");
+    const interrupted = reduceAgent(working, ev("Interrupt", {}, 1100));
+    expect(interrupted.state).toBe("done");
+    expect(interrupted.toolName).toBeNull();
+  });
+
+  it("서브에이전트가 남아 있어도 done으로 본다", () => {
+    const sub = reduceAgent(undefined, ev("SubagentStart", { agent_id: "a1" }, 1000));
+    const interrupted = reduceAgent(sub, ev("Interrupt", {}, 1100));
+    expect(interrupted.state).toBe("done");
+    expect(interrupted.subagents).toBe("{}");
+  });
+});

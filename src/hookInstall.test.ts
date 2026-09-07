@@ -1,5 +1,20 @@
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
-import { applyHiveHooks, HIVE_HOOK_EVENTS, hiveHookStatus, removeHiveHooks, type Settings } from "./hookInstall.js";
+import {
+  applyHiveHooks,
+  codexStateKey,
+  HIVE_CODEX_HOOK_EVENTS,
+  HIVE_HOOK_EVENTS,
+  hiveHookStatus,
+  installHooks,
+  parseCodexHookState,
+  removeHiveHooks,
+  statusHooks,
+  uninstallHooks,
+  type Settings,
+} from "./hookInstall.js";
 
 const SCRIPT = "/home/ed/src/hive/hooks/claude-hook.sh";
 
@@ -84,5 +99,130 @@ describe("hiveHookStatus", () => {
 
     const installed = hiveHookStatus(applyHiveHooks({}, SCRIPT), SCRIPT);
     expect(installed.every((s) => s.installed === true)).toBe(true);
+  });
+});
+
+describe("codex hooks", () => {
+  const CODEX_SCRIPT = "/home/ed/src/hive/hooks/codex-hook.sh";
+  const HOOKS_PATH = "/home/ed/.codex/hooks.json";
+
+  it("codex가 아는 이벤트만 설치한다", () => {
+    const next = applyHiveHooks({}, CODEX_SCRIPT, HIVE_CODEX_HOOK_EVENTS);
+    const events = Object.keys(next.hooks ?? {});
+    expect(events).toHaveLength(HIVE_CODEX_HOOK_EVENTS.length);
+    // codex는 Notification/StopFailure/TeammateIdle/PostToolUseFailure를 모른다.
+    expect(events).not.toContain("Notification");
+    expect(events).not.toContain("PostToolUseFailure");
+  });
+
+  it("codex 쪽에는 matcher를 붙이지 않는다", () => {
+    const next = applyHiveHooks({}, CODEX_SCRIPT, HIVE_CODEX_HOOK_EVENTS);
+    for (const groups of Object.values(next.hooks!)) {
+      expect(groups.every((g) => g.matcher === undefined)).toBe(true);
+    }
+  });
+
+  it("codex가 3초로 잘라내는 이벤트는 처음부터 3초로 등록한다", () => {
+    const next = applyHiveHooks({}, CODEX_SCRIPT, HIVE_CODEX_HOOK_EVENTS);
+    expect(next.hooks!.SessionEnd[0].hooks[0].timeout).toBe(3);
+    expect(next.hooks!.Interrupt[0].hooks[0].timeout).toBe(3);
+    expect(next.hooks!.SessionStart[0].hooks[0].timeout).toBe(5);
+  });
+
+  it("기존 orca codex hook을 보존한다", () => {
+    const existing: Settings = {
+      hooks: {
+        Stop: [{ hooks: [{ type: "command", command: "/home/ed/.orca/agent-hooks/codex-hook.sh" }] }],
+      },
+    };
+    const next = applyHiveHooks(existing, CODEX_SCRIPT, HIVE_CODEX_HOOK_EVENTS);
+    expect(next.hooks!.Stop.flatMap((g) => g.hooks.map((h) => h.command))).toEqual([
+      "/home/ed/.orca/agent-hooks/codex-hook.sh",
+      CODEX_SCRIPT,
+    ]);
+  });
+
+  it("신뢰 키는 <경로>:<snake_case 이벤트>:<그룹>:<항목> 형식이다", () => {
+    expect(codexStateKey(HOOKS_PATH, "PreToolUse", 0, 0)).toBe(`${HOOKS_PATH}:pre_tool_use:0:0`);
+    expect(codexStateKey(HOOKS_PATH, "UserPromptSubmit", 1, 2)).toBe(`${HOOKS_PATH}:user_prompt_submit:1:2`);
+  });
+
+  it("config.toml의 hooks.state에서 enabled만 읽는다", () => {
+    const toml = [
+      `model = "gpt-6-astra"`,
+      `[hooks.state]`,
+      ``,
+      `[hooks.state."${HOOKS_PATH}:pre_tool_use:0:0"]`,
+      `enabled = true`,
+      `trusted_hash = "sha256:abc"`,
+      ``,
+      `[hooks.state."${HOOKS_PATH}:stop:0:0"]`,
+      `trusted_hash = "sha256:def"`,
+      ``,
+      `[tui]`,
+      `enabled = true`,
+    ].join("\n");
+    const state = parseCodexHookState(toml);
+    expect(state.get(`${HOOKS_PATH}:pre_tool_use:0:0`)).toBe(true);
+    // 승인 해시만 있고 enabled가 없으면 아직 켜진 게 아니다.
+    expect(state.get(`${HOOKS_PATH}:stop:0:0`)).toBe(false);
+    // [tui] 섹션의 enabled가 직전 hook 상태로 새면 안 된다.
+    expect(state.size).toBe(2);
+  });
+});
+
+describe("installHooks / statusHooks (codex 파일 왕복)", () => {
+  function tmpDir(): string {
+    return mkdtempSync(join(tmpdir(), "hive-hooks-"));
+  }
+
+  it("codex hooks.json을 새로 만들고 status가 installed로 읽는다", () => {
+    const dir = tmpDir();
+    const hooksPath = join(dir, "hooks.json");
+    const configPath = join(dir, "config.toml");
+
+    const results = installHooks({ agents: ["codex"], codexHooksPath: hooksPath });
+    expect(results).toHaveLength(1);
+    expect(results[0].agent).toBe("codex");
+    expect(existsSync(hooksPath)).toBe(true);
+
+    const rows = statusHooks({ agents: ["codex"], codexHooksPath: hooksPath, codexConfigPath: configPath });
+    expect(rows).toHaveLength(HIVE_CODEX_HOOK_EVENTS.length);
+    expect(rows.every((r) => r.installed)).toBe(true);
+    // config.toml이 없으면 아직 아무것도 승인되지 않은 상태다.
+    expect(rows.every((r) => r.trusted === false)).toBe(true);
+
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("config.toml에 승인이 있으면 그 이벤트만 trusted로 표시한다", () => {
+    const dir = tmpDir();
+    const hooksPath = join(dir, "hooks.json");
+    const configPath = join(dir, "config.toml");
+
+    installHooks({ agents: ["codex"], codexHooksPath: hooksPath });
+    // 신뢰 키의 그룹/항목 index는 hooks.json에 실제로 쓰인 위치를 따른다.
+    writeFileSync(configPath, `[hooks.state."${hooksPath}:session_start:0:0"]\nenabled = true\n`);
+
+    const rows = statusHooks({ agents: ["codex"], codexHooksPath: hooksPath, codexConfigPath: configPath });
+    expect(rows.find((r) => r.event === "SessionStart")?.trusted).toBe(true);
+    expect(rows.find((r) => r.event === "Stop")?.trusted).toBe(false);
+
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it("uninstall하면 hive hook만 빠지고 남의 hook은 남는다", () => {
+    const dir = tmpDir();
+    const hooksPath = join(dir, "hooks.json");
+    const orca = { type: "command" as const, command: "/home/ed/.orca/agent-hooks/codex-hook.sh" };
+    writeFileSync(hooksPath, JSON.stringify({ hooks: { Stop: [{ hooks: [orca] }] } }));
+
+    installHooks({ agents: ["codex"], codexHooksPath: hooksPath });
+    uninstallHooks({ agents: ["codex"], codexHooksPath: hooksPath });
+
+    const after = JSON.parse(readFileSync(hooksPath, "utf8")) as Settings;
+    expect(after.hooks!.Stop.flatMap((g) => g.hooks.map((h) => h.command))).toEqual([orca.command]);
+
+    rmSync(dir, { recursive: true, force: true });
   });
 });

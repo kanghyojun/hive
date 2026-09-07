@@ -1,7 +1,7 @@
 import { basename } from "node:path";
-import type { AgentRecord, AgentState } from "./state.js";
-import { effectiveState } from "./state.js";
-import type { PaneInfo } from "./tmux.js";
+import type { AgentKind, AgentRecord, AgentState } from "./state.js";
+import { AGENT_KINDS, effectiveState } from "./state.js";
+import type { PaneInfo, ProcInfo } from "./tmux.js";
 import type { RepoInfo } from "./git.js";
 
 export type ViewMode = "recent" | "group";
@@ -18,6 +18,7 @@ export interface Row {
   worktreePath?: string;
   repoName?: string;
   branch?: string;
+  agent?: AgentKind;
   state: AgentState;
   source: string;
   prompt: string | null;
@@ -41,6 +42,7 @@ export interface BuildRowsInput {
   agents: AgentRecord[];
   repoByCwd: Map<string, RepoInfo | null>;
   sleepMap: Map<string, boolean>;
+  agentByPane?: Map<string, AgentKind>;
   now: number;
   mode: ViewMode;
   tmuxPid: string;
@@ -54,6 +56,7 @@ interface WindowAgg {
   name: string;
   cwd: string;
   cwdRank: number;
+  agent?: AgentKind;
   active: boolean;
   windowActivity: number;
   tracked: boolean;
@@ -63,11 +66,51 @@ interface WindowAgg {
   lastPromptTs: number | null;
 }
 
+// 프로세스 트리를 몇 단계까지 따라가며 agent를 찾을지. npm 래퍼는 보통 한두 단계다.
+const MAX_PROC_DEPTH = 8;
+
+export function agentKindFromCommand(command: string): AgentKind | undefined {
+  return AGENT_KINDS.find((kind) => kind === command);
+}
+
+function findAgentInTree(rootPid: string, childrenByPpid: Map<string, ProcInfo[]>): AgentKind | undefined {
+  let frontier = childrenByPpid.get(rootPid) ?? [];
+  for (let depth = 0; depth < MAX_PROC_DEPTH && frontier.length > 0; depth++) {
+    const next: ProcInfo[] = [];
+    for (const proc of frontier) {
+      const kind = agentKindFromCommand(proc.comm);
+      if (kind) return kind;
+      next.push(...(childrenByPpid.get(proc.pid) ?? []));
+    }
+    frontier = next;
+  }
+  return undefined;
+}
+
+// hook 이벤트가 아직 하나도 없어도 pane에 떠 있는 agent는 목록에 잡아야 한다.
+// codex는 npm 래퍼(node)가 실제 바이너리를 자식으로 띄워서 pane 명령만 보면 놓친다(실측).
+// 얕은 쪽부터 훑으므로 claude가 codex exec을 돌리는 pane은 claude로 남는다.
+export function resolvePaneAgents(panes: PaneInfo[], procs: ProcInfo[]): Map<string, AgentKind> {
+  const childrenByPpid = new Map<string, ProcInfo[]>();
+  for (const proc of procs) {
+    const list = childrenByPpid.get(proc.ppid) ?? [];
+    list.push(proc);
+    childrenByPpid.set(proc.ppid, list);
+  }
+
+  const agents = new Map<string, AgentKind>();
+  for (const pane of panes) {
+    const kind = agentKindFromCommand(pane.paneCurrentCommand) ?? findAgentInTree(pane.panePid, childrenByPpid);
+    if (kind) agents.set(pane.paneId, kind);
+  }
+  return agents;
+}
+
 // 사이드바 자신과 일반 셸 pane은 agent가 아니다. 이런 pane까지 상태를 매기면 unknown이 되고,
-// unknown은 done/idle보다 급한 상태라 claude가 끝난 window를 ◌로 덮어쓴다.
+// unknown은 done/idle보다 급한 상태라 agent가 끝난 window를 ◌로 덮어쓴다.
 // 사이드바는 join-pane -hb로 항상 pane_index 0이라 window의 첫 pane이기도 하다(실측).
-function isAgentPane(pane: PaneInfo, agent: AgentRecord | undefined): boolean {
-  return agent !== undefined || pane.paneCurrentCommand === "claude";
+function isAgentPane(agent: AgentRecord | undefined, kind: AgentKind | undefined): boolean {
+  return agent !== undefined || kind !== undefined;
 }
 
 // window를 대표할 cwd는 agent pane을, 그중에서도 활성 pane을 우선한다.
@@ -84,8 +127,10 @@ export function buildRows(input: BuildRowsInput): Row[] {
   const windows = new Map<string, WindowAgg>();
   for (const pane of input.panes) {
     const agent = agentByPane.get(pane.paneId);
+    // agentByPane은 프로세스 트리까지 본 결과라 더 정확하지만, 없으면 pane 명령만으로 판단한다.
+    const kind = input.agentByPane?.get(pane.paneId) ?? agentKindFromCommand(pane.paneCurrentCommand);
     const screenWaiting = input.screenWaitingPanes?.has(pane.paneId) ?? false;
-    const tracked = isAgentPane(pane, agent);
+    const tracked = isAgentPane(agent, kind);
     // agent가 없는 pane은 상태 집계에서 빼되 window 자체는 목록에 남긴다(idle = agent 없음).
     const { state, source } = tracked
       ? effectiveState(agent, input.now, screenWaiting)
@@ -102,6 +147,7 @@ export function buildRows(input: BuildRowsInput): Row[] {
         name: pane.windowName,
         cwd: pane.paneCurrentPath,
         cwdRank: rank,
+        agent: kind,
         active: pane.windowActive,
         windowActivity: pane.windowActivity,
         tracked,
@@ -127,6 +173,7 @@ export function buildRows(input: BuildRowsInput): Row[] {
       existing.state = state;
       existing.source = source;
       existing.prompt = agent?.prompt ?? null;
+      existing.agent = kind ?? existing.agent;
     }
   }
 
@@ -146,6 +193,7 @@ export function buildRows(input: BuildRowsInput): Row[] {
       worktreePath: repo?.toplevel,
       repoName: repo ? basename(repo.repoRoot) : undefined,
       branch: repo?.branch,
+      agent: w.agent,
       state: w.state,
       source: w.source,
       prompt: w.prompt,
