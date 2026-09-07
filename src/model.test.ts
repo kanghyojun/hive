@@ -13,12 +13,14 @@ function pane(overrides: Partial<PaneInfo>): PaneInfo {
     windowId: overrides.windowId ?? "@1",
     windowIndex: "1",
     windowName: overrides.windowName ?? "w1",
+    windowAutoName: false,
     windowActive: false,
     windowActivity: 0,
     paneId: overrides.paneId ?? "%1",
     paneActive: true,
     paneCurrentPath: overrides.paneCurrentPath ?? "/repo",
     paneCurrentCommand: "claude",
+    paneTitle: "",
     panePid: "1",
     ...overrides,
   };
@@ -136,6 +138,155 @@ describe("buildRows recent 모드", () => {
   });
 });
 
+describe("buildRows 정렬 우선순위", () => {
+  it("recent 모드에서 waiting과 done을 더 최근에 입력한 working보다 위로 올린다", () => {
+    const rows = windowRows(
+      buildRows({
+        panes: [
+          pane({ windowId: "@1", paneId: "%1" }),
+          pane({ windowId: "@2", paneId: "%2" }),
+          pane({ windowId: "@3", paneId: "%3" }),
+        ],
+        agents: [
+          agent({ paneId: "%1", state: "working", lastPromptTs: 3000 }),
+          agent({ paneId: "%2", state: "done", lastPromptTs: 2000 }),
+          agent({ paneId: "%3", state: "waiting", lastPromptTs: 1000 }),
+        ],
+        repoByCwd: new Map(),
+        sleepMap: new Map(),
+        now: 5000,
+        mode: "recent",
+        tmuxPid: TMUX_PID,
+      })
+    );
+    expect(rows.map((r) => r.windowId)).toEqual(["@3", "@2", "@1"]);
+  });
+
+  it("group 모드에서 잠자는 창은 저장소와 상관없이 맨 밑으로 모은다", () => {
+    const repoA: RepoInfo = { toplevel: "/repo-a", repoRoot: "/repo-a", branch: "main" };
+    const repoB: RepoInfo = { toplevel: "/repo-b", repoRoot: "/repo-b", branch: "main" };
+    const rows = buildRows({
+      panes: [
+        pane({ windowId: "@1", paneId: "%1", paneCurrentPath: "/repo-a" }),
+        pane({ windowId: "@2", paneId: "%2", paneCurrentPath: "/repo-b" }),
+        pane({ windowId: "@3", paneId: "%3", paneCurrentPath: "/repo-a" }),
+      ],
+      agents: [
+        agent({ paneId: "%1", lastPromptTs: 3000 }),
+        agent({ paneId: "%2", lastPromptTs: 2000 }),
+        agent({ paneId: "%3", lastPromptTs: 1000 }),
+      ],
+      repoByCwd: new Map<string, RepoInfo | null>([
+        ["/repo-a", repoA],
+        ["/repo-b", repoB],
+      ]),
+      sleepMap: new Map([["@3", true]]),
+      now: 5000,
+      mode: "group",
+      tmuxPid: TMUX_PID,
+    });
+    expect(rows.map((r) => (r.kind === "window" ? r.windowId : `#${r.name}`))).toEqual([
+      "#repo-a",
+      "#repo-a : main",
+      "@1",
+      "#repo-b",
+      "#repo-b : main",
+      "@2",
+      "#",
+      "#잠자는 중",
+      "#repo-a",
+      "#repo-a : main",
+      "@3",
+    ]);
+  });
+});
+
+describe("buildRows autoName", () => {
+  it("tmux 자동 이름 여부를 그대로 전달한다", () => {
+    const rows = windowRows(
+      buildRows({
+        panes: [
+          pane({ windowId: "@1", paneId: "%1", windowName: "node", windowAutoName: true }),
+          pane({ windowId: "@2", paneId: "%2", windowName: "code", windowAutoName: false }),
+        ],
+        agents: [
+          agent({ paneId: "%1", lastPromptTs: 2000 }),
+          agent({ paneId: "%2", lastPromptTs: 1000 }),
+        ],
+        repoByCwd: new Map(),
+        sleepMap: new Map(),
+        now: 5000,
+        mode: "recent",
+        tmuxPid: TMUX_PID,
+      })
+    );
+    expect(rows.map((r) => [r.name, r.autoName])).toEqual([
+      ["node", true],
+      ["code", false],
+    ]);
+  });
+});
+
+describe("buildRows 머리글 라벨", () => {
+  const labels = (repoByCwd: Map<string, RepoInfo | null>, cwds: string[]) =>
+    buildRows({
+      panes: cwds.map((cwd, i) =>
+        pane({ windowId: `@${i + 1}`, paneId: `%${i + 1}`, paneCurrentPath: cwd })
+      ),
+      agents: cwds.map((_, i) => agent({ paneId: `%${i + 1}`, lastPromptTs: 9000 - i })),
+      repoByCwd,
+      sleepMap: new Map(),
+      now: 5000,
+      mode: "recent",
+      tmuxPid: TMUX_PID,
+    })
+      .filter((r) => r.kind === "window")
+      .map((r) => [r.repoLabel, r.worktreeLabel]);
+
+  it("1층은 메인 저장소, 2층은 '워크트리 : 브랜치'. 따로 판 워크트리는 +를 붙인다", () => {
+    const wt: RepoInfo = { toplevel: "/src/hive-wt", repoRoot: "/src/hive", branch: "feature/x" };
+    expect(labels(new Map([["/src/hive-wt", wt]]), ["/src/hive-wt"])).toEqual([
+      ["hive", "+hive-wt : feature/x"],
+    ]);
+  });
+
+  it("저장소 본체에서 일하면 +를 붙이지 않는다", () => {
+    const main: RepoInfo = { toplevel: "/src/hive", repoRoot: "/src/hive", branch: "main" };
+    expect(labels(new Map([["/src/hive", main]]), ["/src/hive"])).toEqual([["hive", "hive : main"]]);
+  });
+
+  it("repo가 아니면 cwd 이름만 쓴다", () => {
+    expect(labels(new Map([["/tmp/scratch", null]]), ["/tmp/scratch"])).toEqual([
+      ["(repo 아님)", "scratch"],
+    ]);
+  });
+});
+
+describe("buildRows key", () => {
+  it("잠자는 묶음까지 합쳐도 key가 겹치지 않는다", () => {
+    const repoA: RepoInfo = { toplevel: "/repo-a", repoRoot: "/repo-a", branch: "main" };
+    for (const mode of ["recent", "group"] as const) {
+      const rows = buildRows({
+        panes: [
+          pane({ windowId: "@1", paneId: "%1", paneCurrentPath: "/repo-a" }),
+          pane({ windowId: "@2", paneId: "%2", paneCurrentPath: "/repo-a" }),
+        ],
+        agents: [
+          agent({ paneId: "%1", lastPromptTs: 2000 }),
+          agent({ paneId: "%2", lastPromptTs: 1000 }),
+        ],
+        repoByCwd: new Map<string, RepoInfo | null>([["/repo-a", repoA]]),
+        sleepMap: new Map([["@2", true]]),
+        now: 5000,
+        mode,
+        tmuxPid: TMUX_PID,
+      });
+      const keys = rows.map((r) => r.key);
+      expect(new Set(keys).size).toBe(keys.length);
+    }
+  });
+});
+
 describe("buildRows group 모드", () => {
   it("repoRoot -> worktree 순으로 묶는다", () => {
     const repoA: RepoInfo = { toplevel: "/repo-a", repoRoot: "/repo-a", branch: "main" };
@@ -192,8 +343,13 @@ describe("buildRows group 모드", () => {
       mode: "group",
       tmuxPid: TMUX_PID,
     });
-    const groupNames = rows.filter((r) => r.kind === "group").map((r) => r.name);
-    expect(groupNames).toEqual(["repo-b", "repo-a"]);
+    const groupNames = rows.filter((r) => r.kind !== "window").map((r) => [r.depth, r.name]);
+    expect(groupNames).toEqual([
+      [0, "repo-b"],
+      [1, "repo-b : main"],
+      [0, "repo-a"],
+      [1, "repo-a : main"],
+    ]);
   });
 });
 
@@ -242,7 +398,7 @@ describe("buildRows agent 없는 pane 처리", () => {
     expect(rows[0].cwd).toBe("/repo/feature");
   });
 
-  it("agent가 하나도 없는 window는 목록에 남되 idle로 본다", () => {
+  it("agent가 하나도 없는 window는 목록에서 뺀다", () => {
     const rows = windowRows(
       buildRows({
         panes: [sidebar("@1", "%0"), pane({ windowId: "@1", paneId: "%1", paneCurrentCommand: "zsh" })],
@@ -254,8 +410,25 @@ describe("buildRows agent 없는 pane 처리", () => {
         tmuxPid: TMUX_PID,
       })
     );
-    expect(rows).toHaveLength(1);
-    expect(rows[0].state).toBe("idle");
+    expect(rows).toHaveLength(0);
+  });
+
+  it("claude가 도는 window만 남기고 셸뿐인 window는 뺀다", () => {
+    const rows = windowRows(
+      buildRows({
+        panes: [
+          pane({ windowId: "@1", paneId: "%1" }),
+          pane({ windowId: "@2", paneId: "%2", paneCurrentCommand: "zsh" }),
+        ],
+        agents: [],
+        repoByCwd: new Map(),
+        sleepMap: new Map(),
+        now: 5000,
+        mode: "recent",
+        tmuxPid: TMUX_PID,
+      })
+    );
+    expect(rows.map((r) => r.windowId)).toEqual(["@1"]);
   });
 
   it("hook 기록이 없어도 claude가 도는 pane은 unknown으로 남긴다", () => {

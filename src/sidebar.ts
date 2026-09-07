@@ -12,7 +12,7 @@ import {
 } from "./tmux.js";
 import { selfCommand } from "./paths.js";
 
-export const SIDEBAR_WIDTH = 34;
+export const SIDEBAR_WIDTH = 41;
 const SIDEBAR_PANE_OPTION = "@hive_sidebar_pane";
 const SIDEBAR_HOOK_INDEX = "session-window-changed[77]";
 
