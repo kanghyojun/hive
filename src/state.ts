@@ -1,11 +1,16 @@
 export type AgentState = "working" | "waiting" | "done" | "idle" | "unknown";
 
-// hive가 상태를 추적하는 에이전트 종류. 사이드바에서는 cc(claude code) / co(codex)로 줄여 쓴다.
+// hive가 상태를 추적하는 에이전트 종류.
 export type AgentKind = "claude" | "codex";
 
 export const AGENT_KINDS: AgentKind[] = ["claude", "codex"];
 
-export const AGENT_LABEL: Record<AgentKind, string> = { claude: "cc", codex: "co" };
+// 행 맨 앞 에이전트 표시. 폭 1 글리프만 쓴다(string-width로 확인).
+// 이모지와 Nerd Font 보조평면 글리프는 2칸이라 열이 어긋난다.
+export const AGENT_GLYPH: Record<AgentKind, string> = { claude: "✱", codex: "⬡" };
+export const AGENT_GLYPH_WIDTH = 1;
+// 목록에 에이전트 종류가 하나뿐이면 글리프 열을 비운다.
+export const HIDE_GLYPH_WHEN_UNIFORM = true;
 
 export interface AgentRecord {
   tmuxPid: string;

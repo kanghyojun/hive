@@ -32,6 +32,15 @@ export function uiStatePath(): string {
   return join(hiveHome(), "ui.json");
 }
 
+export function reposPath(): string {
+  return join(hiveHome(), "repos.json");
+}
+
+// claude-hud가 스냅샷을 써 줄 기본 경로. hud는 디렉토리가 이미 있을 때만 쓰므로 ensureDirs()가 만든 HIVE_HOME을 쓴다.
+export function claudeUsageSnapshotPath(): string {
+  return join(hiveHome(), "claude-usage.json");
+}
+
 export function hookScriptPath(): string {
   return join(packageRoot, "hooks", "claude-hook.sh");
 }

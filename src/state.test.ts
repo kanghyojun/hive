@@ -1,5 +1,13 @@
 import { describe, expect, it } from "vitest";
-import { effectiveState, looksLikePermissionPrompt, reduceAgent, type AgentRecord } from "./state.js";
+import stringWidth from "string-width";
+import {
+  AGENT_GLYPH,
+  AGENT_GLYPH_WIDTH,
+  effectiveState,
+  looksLikePermissionPrompt,
+  reduceAgent,
+  type AgentRecord,
+} from "./state.js";
 
 const TMUX_PID = "111";
 const PANE_ID = "%1";
@@ -139,5 +147,14 @@ describe("codex Interrupt", () => {
     const interrupted = reduceAgent(sub, ev("Interrupt", {}, 1100));
     expect(interrupted.state).toBe("done");
     expect(interrupted.subagents).toBe("{}");
+  });
+});
+
+describe("AGENT_GLYPH", () => {
+  // 폭이 어긋나면 행의 아이콘 열이 밀린다. 값을 바꿀 때 여기서 막는다.
+  it("모든 글리프가 폭 1이다", () => {
+    for (const glyph of Object.values(AGENT_GLYPH)) {
+      expect(stringWidth(glyph)).toBe(AGENT_GLYPH_WIDTH);
+    }
   });
 });

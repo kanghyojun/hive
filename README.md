@@ -4,7 +4,7 @@ tmux 위에서 여러 window의 AI agent(Claude Code, Codex) 상태를 한눈에
 
 ## 쓰레드뷰란
 
-hive에서 tmux window 하나가 스레드 하나입니다. 사이드바의 한 행은 window 하나를 나타내며, 그 window 안 pane에서 에이전트가 지금 뭘 하고 있는지를 보여줍니다. 행 맨 앞의 `cc`는 Claude Code, `co`는 Codex입니다. window 안에 pane이 여러 개면 그 중 가장 급한 상태를 대표로 보여줍니다(waiting이 working보다 우선, working이 idle보다 우선하는 식).
+hive에서 tmux window 하나가 스레드 하나입니다. 사이드바의 한 행은 window 하나를 나타내며, 그 window 안 pane에서 에이전트가 지금 뭘 하고 있는지를 보여줍니다. 행 맨 앞의 `✱`는 Claude Code, `⬡`는 Codex이고, 목록에 종류가 하나뿐이면 이 열은 표시하지 않습니다(표기는 `src/state.ts`의 `AGENT_GLYPH`). window 안에 pane이 여러 개면 그 중 가장 급한 상태를 대표로 보여줍니다(waiting이 working보다 우선, working이 idle보다 우선하는 식).
 
 상태는 5가지입니다.
 
@@ -79,6 +79,9 @@ bind W command-prompt -p "branch:" "run-shell -b \"<node> <cli.js> --pane '#{pan
 - `s`: 선택한 window sleep 토글
 - `g`: `recent`/`group` 보기 전환
 - `n`: branch 이름 입력 후 그 저장소에 `wt new` 실행 (새 세션이 열리고 그리로 이동합니다)
+- `o`: 안 열린 worktree 목록에서 골라 열기. 아는 저장소마다 "+ 새 worktree" 항목이 있어 그 자리에서 `n`과 같은 입력줄로 넘어갑니다
+- `D`: 선택한 행의 worktree 삭제. 확인 후 `git worktree remove` + 그 worktree를 쓰던 tmux 창 종료까지 합니다. 커밋 안 된 변경이 있으면 `yes`를 쳐야 지웁니다. 메인 저장소와 마지막 세션은 거부합니다. 브랜치는 남깁니다
+- `u`: 사용량 보기 토글
 - `r`: 강제 새로고침
 - `q`: 종료 (hook/옵션 정리 후 pane이 닫힙니다)
 
@@ -89,6 +92,9 @@ bind W command-prompt -p "branch:" "run-shell -b \"<node> <cli.js> --pane '#{pan
 ```
 hive wt init-script [--repo <path>] [--force]   # <repo>/.hive/init.sh 템플릿 생성
 hive wt new <branch> [--repo <path>] [--base <ref>] [--no-init]
+hive wt open <branch|path|디렉토리이름> [--repo <path>] [--init]
+hive wt rm <branch|path|디렉토리이름> [--repo <path>] [--force]
+hive wt list [--repo <path>]
 ```
 
 `wt new`는 `HIVE_WORKTREE_BASE` 아래에 git worktree를 만들고, init script(`HIVE_INIT_SCRIPT` env > `<repo>/.hive/init.sh` 순으로 찾음)를 실행한 뒤, **tmux 세션을 하나 새로 엽니다**(왼쪽 쓰레드뷰, 오른쪽 init 로그 → 셸). worktree 하나가 세션 하나입니다. 세션 이름은 브랜치명이고(`/`, `.`, `:`, 공백은 `-`로 바꿉니다), 같은 이름이 이미 있으면 `-2`, `-3`을 붙입니다. 세션을 만든 뒤에는 붙어 있는 클라이언트를 그 세션으로 옮깁니다(`switched: false`면 옮길 클라이언트가 없었다는 뜻이고, 세션은 그대로 만들어져 있습니다).
@@ -97,18 +103,59 @@ hive wt new <branch> [--repo <path>] [--base <ref>] [--no-init]
 
 init script 실행 로그는 `~/.hive/logs/wt-<branch>.log`에 남습니다. init script가 실패해도 worktree와 세션은 그대로 유지되고 exit code만 알립니다.
 
+`wt open`은 저장소에는 있지만 tmux에 안 떠 있는 worktree를 `wt new`와 같은 모양(세션 하나, 왼쪽 사이드바, 오른쪽 셸)으로 엽니다. 이미 열려 있으면 그 세션으로 옮기고 `alreadyOpen`을 돌려줍니다. 이미 있던 worktree는 의존성이 깔려 있다고 보고 init script를 기본으로 돌리지 않습니다(`--init`으로 돌립니다).
+
+`wt rm`은 (1) 커밋 안 된 변경이 있으면 `--force` 없이는 거부하고, (2) `git worktree remove`를 먼저 부른 뒤, (3) 그 worktree 안에 pane이 있는 tmux 창을 닫습니다. 창 소속은 `pane_current_path` 접두사로 판단하므로 worktree 밖으로 `cd`한 창은 안 닫히고, 셸만 열어 둔 창은 같이 닫힙니다. 남는 세션이 없으면(마지막 세션이면 tmux 서버까지 내려갑니다) 창은 그대로 두고 `skippedReason`을 돌려줍니다. 브랜치는 지우지 않습니다.
+
+`wt list`의 각 항목에는 그 worktree를 쓰고 있는 창 목록이 `windows`로 붙습니다. tmux 밖에서 부르면 항상 빈 배열입니다.
+
+`wt new`/`wt open`/`wt rm`을 한 저장소는 `~/.hive/repos.json`에 적어 둡니다. 창이 하나도 안 떠 있는 저장소를 `o` 목록에 보여주려면 이 목록이 필요합니다.
+
+## ab-bridge
+
+`ab-local`이 PATH에 있을 때만 사이드바 머리글 오른쪽에 맥 브라우저 브리지(CDP) 상태를 `ab●`(연결됨) / `ab✗`(안 됨)로 보여줍니다. 30초마다 `tailscale ip -4 <macHost>`로 IP를 얻어 `http://<ip>:<port>/json/version`을 확인합니다. 설정은 `${AB_BRIDGE_CONFIG:-~/.config/ab-bridge/profiles.json}`을 읽고, 없으면 ab-bridge와 같은 기본값(`macbookpro:9222`)으로 돕니다.
+
+`ab✗`면 맥에서 `ab-up`을 실행해야 합니다. hive가 대신 실행하지는 않습니다.
+
+```
+hive ab status
+```
+
+## 사용량
+
+`u` 키로 켜는 패널입니다. Claude Code와 Codex의 창 사용률(%)과 리셋까지 남은 시간만 보여줍니다. 달러 환산, 토큰 합계, 세션별 사용량은 없습니다. 뷰가 꺼져 있으면 파일을 아예 읽지 않고, 켜져 있으면 30초마다 읽습니다.
+
+**Claude 쪽은 claude-hud가 스냅샷을 써 줘야 보입니다.** `~/.claude/plugins/claude-hud/config.json`의 `display`에 아래를 직접 추가하세요(hive는 이 파일을 고치지 않습니다).
+
+```json
+"externalUsageWritePath": "/home/ed/.hive/claude-usage.json"
+```
+
+절대경로여야 하고, `.json`으로 끝나야 하고, 디렉토리가 이미 있어야 합니다. `display.showUsage`는 false여도 됩니다. statusLine은 Claude Code 세션이 떠 있을 때만 돌기 때문에 세션이 다 닫히면 값이 멈춥니다(그래서 갱신 시각을 같이 보여줍니다).
+
+hive는 `HIVE_CLAUDE_USAGE_PATH` → hud 설정의 `externalUsageWritePath` → `~/.hive/claude-usage.json` 순으로 스냅샷을 찾습니다.
+
+Codex는 설정이 필요 없습니다. `~/.codex/sessions`의 최신 rollout 파일 꼬리에서 마지막 `token_count` 줄의 `rate_limits`를 읽습니다. 따라서 값은 마지막 codex 응답 시점 기준이고, 플랜에 따라 5시간 창이 없을 수 있습니다(`prolite`는 7일 창만 냅니다).
+
+```
+hive usage    # 두 출처에서 읽은 원본과 스냅샷 경로 확인
+```
+
 ## 환경변수
 
 - `HIVE_HOME` (기본 `~/.hive`): `hive.db`, `spool/`, `logs/`, `ui.json`을 두는 데이터 디렉토리.
 - `HIVE_WORKTREE_BASE` (기본 `{repoParent}/{repo}-worktrees`): `wt new`가 worktree를 만들 위치. `{repoParent}`, `{repo}` 플레이스홀더를 치환합니다.
 - `HIVE_INIT_SCRIPT`: `<repo>/.hive/init.sh`보다 우선하는 init script 절대경로.
 - `HIVE_TMUX_SOCKET`: tmux 소켓 경로. 없으면 `$TMUX`의 첫 필드, 그것도 없으면 기본 소켓.
-- `CLAUDE_CONFIG_DIR`: `hive hook`이 기본으로 읽고 쓰는 `settings.json`의 디렉토리.
+- `CLAUDE_CONFIG_DIR`: `hive hook`이 기본으로 읽고 쓰는 `settings.json`의 디렉토리. 사용량은 이 디렉토리 아래 `plugins/claude-hud/config.json`도 읽습니다(읽기만 합니다).
+- `CODEX_HOME` (기본 `~/.codex`): `hive hook`의 `hooks.json`과 사용량이 읽는 `sessions/` 위치.
+- `AB_BRIDGE_CONFIG` (기본 `~/.config/ab-bridge/profiles.json`): ab-bridge 설정 파일 경로.
+- `HIVE_CLAUDE_USAGE_PATH`: claude-hud 스냅샷 경로를 직접 지정. hud 설정값보다 우선합니다.
 
 ## 알려진 제약
 
 - 마우스 클릭 좌표가 pane 기준인지는 사람이 실제로 클릭해서 확인해야 합니다(자동 검증 범위 밖).
 - 다른 tmux 세션의 window로는 목록에 보이되 dim 처리되고, 이동 시 `switch-client`를 시도합니다만 이 경로는 실사용에서 충분히 검증되지 않았습니다.
 - codex를 npm 래퍼로 설치하면 `#{pane_current_command}`가 `node`로 나옵니다(실측). 그래서 3초마다 `ps`로 pane 하위 프로세스를 훑어 `claude`/`codex`를 찾습니다. 한 pane에서 claude가 codex를 자식으로 돌리면 얕은 쪽인 claude로 표시됩니다.
-- 사이드바 폭은 34칸으로 고정입니다(`join-pane -l 34`). pane 크기를 수동으로 바꿔도 다음 window 이동에서 34로 돌아옵니다.
+- 사이드바 폭은 41칸으로 고정입니다(`src/sidebar.ts`의 `SIDEBAR_WIDTH`). pane 크기를 수동으로 바꿔도 다음 window 이동에서 41로 돌아옵니다.
 - transcript tail, OSC 타이틀 파싱, 알림, 원격 접근, 멀티 머신 동기화, 테마, CI, 배포는 이번 프로토타입 범위 밖입니다.
