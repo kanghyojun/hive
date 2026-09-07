@@ -197,7 +197,7 @@ describe("sessionsAfterKill", () => {
 describe("wtRemove", () => {
   const plan: WtRemovePlan = {
     repoRoot: "/repo",
-    entry: { path: "/repo/wt/feat", branch: "feat", head: "abc" },
+    entry: entry({ path: "/repo/wt/feat", branch: "feat", head: "abc" }),
     changes: 0,
     windows: [{ windowId: "@1", sessionName: "feat" }],
   };

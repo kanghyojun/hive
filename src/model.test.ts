@@ -40,6 +40,7 @@ function agent(overrides: Partial<AgentRecord>): AgentRecord {
     lastPromptTs: 1000,
     subagents: "{}",
     ended: 0,
+    title: null,
     ...overrides,
   };
 }
