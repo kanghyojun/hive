@@ -58,6 +58,36 @@ export interface WorktreeEntry {
   path: string;
   head: string;
   branch: string | null;
+  /** 디렉토리가 사라져 admin 항목만 남은 worktree. git이 prunable 줄로 알려준다. */
+  prunable: boolean;
+}
+
+export function parseWorktreeList(out: string): WorktreeEntry[] {
+  const entries: WorktreeEntry[] = [];
+  let cur: Partial<WorktreeEntry> = {};
+  const flush = () => {
+    if (cur.path) {
+      entries.push({
+        path: cur.path,
+        head: cur.head ?? "",
+        branch: cur.branch ?? null,
+        prunable: cur.prunable ?? false,
+      });
+    }
+    cur = {};
+  };
+  for (const line of out.split("\n")) {
+    if (line === "") {
+      flush();
+      continue;
+    }
+    if (line.startsWith("worktree ")) cur.path = line.slice("worktree ".length);
+    else if (line.startsWith("HEAD ")) cur.head = line.slice("HEAD ".length);
+    else if (line.startsWith("branch ")) cur.branch = line.slice("branch refs/heads/".length);
+    else if (line.startsWith("prunable")) cur.prunable = true;
+  }
+  flush();
+  return entries;
 }
 
 export function listWorktrees(repoRoot: string): WorktreeEntry[] {
@@ -70,24 +100,44 @@ export function listWorktrees(repoRoot: string): WorktreeEntry[] {
   } catch {
     return [];
   }
+  return parseWorktreeList(out);
+}
 
-  const entries: WorktreeEntry[] = [];
-  let cur: Partial<WorktreeEntry> = {};
-  const flush = () => {
-    if (cur.path) entries.push({ path: cur.path, head: cur.head ?? "", branch: cur.branch ?? null });
-    cur = {};
-  };
-  for (const line of out.split("\n")) {
-    if (line === "") {
-      flush();
-      continue;
-    }
-    if (line.startsWith("worktree ")) cur.path = line.slice("worktree ".length);
-    else if (line.startsWith("HEAD ")) cur.head = line.slice("HEAD ".length);
-    else if (line.startsWith("branch ")) cur.branch = line.slice("branch refs/heads/".length);
+export function worktreeChanges(path: string): number {
+  try {
+    const out = execFileSync("git", ["-C", path, "status", "--porcelain"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    return out.split("\n").filter((line) => line.trim().length > 0).length;
+  } catch {
+    return 0;
   }
-  flush();
-  return entries;
+}
+
+// execFileSync가 만드는 message는 "Command failed: git -C <절대경로> worktree remove <절대경로>"로
+// 시작해서 진짜 사유가 뒤로 밀린다. 사이드바는 41칸이라 화면에는 명령어 앞부분만 남는다.
+// 사유만 한 줄로 뽑아 앞에 세운다.
+export function cleanGitError(stderr: string, worktreePath: string): string {
+  const msg = stderr
+    .replace(/^fatal:\s*/gm, "")
+    .replaceAll(worktreePath, basename(worktreePath))
+    .replace(/\s+/g, " ")
+    .trim();
+  return msg || "git worktree remove 실패";
+}
+
+export function worktreeRemove(opts: { repoRoot: string; path: string; force?: boolean }): void {
+  const args = ["-C", opts.repoRoot, "worktree", "remove"];
+  if (opts.force) args.push("--force");
+  args.push(opts.path);
+  try {
+    execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+  } catch (err) {
+    const stderr = (err as { stderr?: unknown }).stderr;
+    if (typeof stderr !== "string" || !stderr.trim()) throw err;
+    throw new Error(cleanGitError(stderr, opts.path));
+  }
 }
 
 export function branchExists(repoRoot: string, branch: string): boolean {

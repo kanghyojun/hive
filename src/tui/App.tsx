@@ -773,19 +773,20 @@ export function App(): React.JSX.Element {
       );
     });
   }
+  // 개행이 섞인 메시지는 한 <Text>가 두 줄로 렌더돼 frameLinesRef 계산이 어긋난다.
+  // 폭 안에 확실히 들어가게 clip까지 거친다.
+  const oneLine = (text: string): string => text.replace(/\s+/g, " ").trim();
   if (statusMsg) {
     footer.push(
       <Text key="status" dimColor wrap="truncate-end">
-        {statusMsg}
-        {tail}
+        {clip(oneLine(statusMsg), width) + tail}
       </Text>
     );
   }
   if (error) {
     footer.push(
       <Text key="error" color="red" wrap="truncate-end">
-        error: {error}
-        {tail}
+        {clip(`error: ${oneLine(error)}`, width) + tail}
       </Text>
     );
   }
