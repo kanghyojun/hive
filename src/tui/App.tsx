@@ -516,9 +516,13 @@ export function App(): React.JSX.Element {
   // 한 window가 두 줄을 차지해서 "화면 줄 번호 - 헤더 수"로는 행을 못 찾는다.
   // 렌더할 때 만든 줄별 row 배열을 그대로 클릭 판정에 쓴다.
   const lineRowsRef = useRef<(Row | null)[]>([]);
-  const mouseDepsRef = useRef({ moveSelection, activateRow });
+  const mouseDepsRef = useRef({ moveSelection, activateRow, modalOpen: false });
   useEffect(() => {
-    mouseDepsRef.current = { moveSelection, activateRow };
+    mouseDepsRef.current = {
+      moveSelection,
+      activateRow,
+      modalOpen: confirm !== null || picker !== null || branchInput !== null,
+    };
   });
 
   // 마우스 모드 on/off는 마운트/언마운트에서 한 번씩만 한다.
@@ -536,6 +540,10 @@ export function App(): React.JSX.Element {
   useEffect(() => {
     if (!stdin || !isRawModeSupported) return;
     const onData = (chunk: Buffer | string) => {
+      // 확인창·선택창·브랜치 입력이 떠 있으면 마우스도 삼킨다. 키는 각 모드에서 막고 있는데
+      // 여기만 새면 가려진 목록의 커서가 움직이고, 클릭 한 번에 다른 세션으로 옮겨간 채
+      // 삭제 확인창만 그대로 남는다.
+      if (mouseDepsRef.current.modalOpen) return;
       const str = chunk.toString();
       const re = /\x1b\[<(\d+);(\d+);(\d+)([mM])/g;
       let m: RegExpExecArray | null;
