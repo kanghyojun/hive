@@ -1,3 +1,4 @@
+import { promptTitle } from "./state.js";
 import type { AgentRecord, AgentState } from "./state.js";
 
 // node:sqlite는 experimental이라 의존을 이 파일 하나에 가둔다.
@@ -60,6 +61,7 @@ CREATE TABLE IF NOT EXISTS agents (
   source TEXT,
   tool_name TEXT,
   prompt TEXT,
+  title TEXT,
   last_event TEXT,
   last_ts INTEGER,
   last_prompt_ts INTEGER,
@@ -75,14 +77,60 @@ CREATE TABLE IF NOT EXISTS window_flags (
 );
 `;
 
+// 이미 만들어진 DB에는 CREATE TABLE IF NOT EXISTS가 컬럼을 더해주지 않는다.
+// 지금은 하나뿐이라 직접 확인하고 붙인다. 늘어나면 버전 테이블로 바꾼다.
+function migrate(raw: DatabaseSync): void {
+  const cols = raw.prepare("PRAGMA table_info(agents)").all() as { name: string }[];
+  if (!cols.some((c) => c.name === "title")) {
+    raw.exec("ALTER TABLE agents ADD COLUMN title TEXT");
+  }
+}
+
+// title은 새 UserPromptSubmit이 들어와야 채워진다. 그래서 이미 이벤트를 다 먹은 세션은
+// 이름이 비어 있다가, 그 뒤 아무 입력이나 하나 들어오면 그게 제목이 돼버린다.
+// 원본 이벤트가 남아 있으면 진짜 첫 입력으로 다시 계산해 바로잡는다.
+// 세션이 새로 시작했으면 그 뒤 첫 입력만 본다(reduceAgent와 같은 규칙).
+function backfillTitles(raw: DatabaseSync): void {
+  const rows = raw
+    .prepare(
+      `SELECT a.tmux_pid AS tmuxPid, a.pane_id AS paneId, a.title AS title,
+              (SELECT e.payload FROM events e
+                WHERE e.tmux_pid = a.tmux_pid AND e.pane_id = a.pane_id
+                  AND e.event = 'UserPromptSubmit'
+                  AND e.ts >= COALESCE((SELECT MAX(s.ts) FROM events s
+                                         WHERE s.tmux_pid = a.tmux_pid AND s.pane_id = a.pane_id
+                                           AND s.event = 'SessionStart'), 0)
+                ORDER BY e.ts ASC LIMIT 1) AS payload
+         FROM agents a`
+    )
+    .all() as { tmuxPid: string; paneId: string; title: string | null; payload: string | null }[];
+
+  const update = raw.prepare("UPDATE agents SET title = ? WHERE tmux_pid = ? AND pane_id = ?");
+  for (const row of rows) {
+    if (!row.payload) continue;
+    let title: string | null = null;
+    try {
+      title = promptTitle((JSON.parse(row.payload) as { prompt?: unknown }).prompt);
+    } catch {
+      continue;
+    }
+    // 이벤트가 잘려나가 계산이 안 되면 지금 값을 그대로 둔다. 비우지는 않는다.
+    if (title && title !== row.title) update.run(title, row.tmuxPid, row.paneId);
+  }
+}
+
 export async function openDb(path: string): Promise<Db> {
   // ExperimentalWarning 억제는 cli.tsx 진입부에서 처리한다(동적 import 전에 리스너를 걸어야 함).
   const { DatabaseSync } = await import("node:sqlite");
   const raw = new DatabaseSync(path);
+  // busy_timeout을 제일 먼저 걸어야 한다. journal_mode 설정도 잠금을 잡기 때문에,
+  // 사이드바가 둘 이상 동시에 열리면 여기서 바로 "database is locked"가 난다(실측).
+  raw.exec("PRAGMA busy_timeout = 5000");
   raw.exec("PRAGMA journal_mode = WAL");
-  raw.exec("PRAGMA busy_timeout = 3000");
   raw.exec("PRAGMA synchronous = NORMAL");
   raw.exec(SCHEMA);
+  migrate(raw);
+  backfillTitles(raw);
 
   const stmts = {
     getOffset: raw.prepare("SELECT offset FROM spool_offsets WHERE spool_file = ?"),
@@ -96,11 +144,11 @@ export async function openDb(path: string): Promise<Db> {
     deleteEventsForFile: raw.prepare("DELETE FROM events WHERE spool_file = ?"),
     getAgent: raw.prepare("SELECT * FROM agents WHERE tmux_pid = ? AND pane_id = ?"),
     upsertAgent: raw.prepare(
-      `INSERT INTO agents(tmux_pid, pane_id, state, source, tool_name, prompt, last_event, last_ts, last_prompt_ts, subagents, ended)
-       VALUES (@tmuxPid, @paneId, @state, @source, @toolName, @prompt, @lastEvent, @lastTs, @lastPromptTs, @subagents, @ended)
+      `INSERT INTO agents(tmux_pid, pane_id, state, source, tool_name, prompt, title, last_event, last_ts, last_prompt_ts, subagents, ended)
+       VALUES (@tmuxPid, @paneId, @state, @source, @toolName, @prompt, @title, @lastEvent, @lastTs, @lastPromptTs, @subagents, @ended)
        ON CONFLICT(tmux_pid, pane_id) DO UPDATE SET
          state = excluded.state, source = excluded.source, tool_name = excluded.tool_name,
-         prompt = excluded.prompt, last_event = excluded.last_event, last_ts = excluded.last_ts,
+         prompt = excluded.prompt, title = excluded.title, last_event = excluded.last_event, last_ts = excluded.last_ts,
          last_prompt_ts = excluded.last_prompt_ts, subagents = excluded.subagents, ended = excluded.ended`
     ),
     listAgentsAll: raw.prepare("SELECT * FROM agents"),
@@ -120,6 +168,7 @@ export async function openDb(path: string): Promise<Db> {
       source: String(row.source ?? ""),
       toolName: (row.tool_name as string | null) ?? null,
       prompt: (row.prompt as string | null) ?? null,
+      title: (row.title as string | null) ?? null,
       lastEvent: (row.last_event as string | null) ?? null,
       lastTs: Number(row.last_ts ?? 0),
       lastPromptTs: row.last_prompt_ts == null ? null : Number(row.last_prompt_ts),

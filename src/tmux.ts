@@ -82,12 +82,16 @@ export interface PaneInfo {
   windowId: string;
   windowIndex: string;
   windowName: string;
+  /** tmux가 활성 pane의 명령어로 창 이름을 자동으로 바꾸는 중인지. 켜져 있으면 창 이름은 라벨로 못 쓴다. */
+  windowAutoName: boolean;
   windowActive: boolean;
   windowActivity: number;
   paneId: string;
   paneActive: boolean;
   paneCurrentPath: string;
   paneCurrentCommand: string;
+  /** claude가 OSC로 써 넣는 제목. 작업이 진행되면서 바뀐다. */
+  paneTitle: string;
   panePid: string;
 }
 
@@ -97,12 +101,14 @@ const PANE_FIELDS = [
   "#{window_id}",
   "#{window_index}",
   "#{window_name}",
+  "#{automatic-rename}",
   "#{window_active}",
   "#{window_activity}",
   "#{pane_id}",
   "#{pane_active}",
   "#{pane_current_path}",
   "#{pane_current_command}",
+  "#{pane_title}",
   "#{pane_pid}",
 ].join("\t");
 
@@ -123,12 +129,14 @@ export function listPanes(): PaneInfo[] {
         windowId,
         windowIndex,
         windowName,
+        windowAutoName,
         windowActive,
         windowActivity,
         paneId,
         paneActive,
         paneCurrentPath,
         paneCurrentCommand,
+        paneTitle,
         panePid,
       ] = line.split("\t");
       return {
@@ -137,12 +145,14 @@ export function listPanes(): PaneInfo[] {
         windowId,
         windowIndex,
         windowName,
+        windowAutoName: windowAutoName === "1",
         windowActive: windowActive === "1",
         windowActivity: Number(windowActivity) || 0,
         paneId,
         paneActive: paneActive === "1",
         paneCurrentPath,
         paneCurrentCommand,
+        paneTitle,
         panePid,
       };
     });
@@ -154,6 +164,10 @@ export function paneExists(paneId: string): boolean {
 
 export function selectWindow(windowId: string): void {
   tmux(["select-window", "-t", windowId]);
+}
+
+export function selectPane(paneId: string): void {
+  tmux(["select-pane", "-t", paneId]);
 }
 
 export function capturePaneTail(paneId: string, lines: number): string {

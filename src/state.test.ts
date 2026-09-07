@@ -66,6 +66,28 @@ describe("reduceAgent", () => {
   });
 });
 
+describe("reduceAgent title", () => {
+  it("세션의 첫 입력만 제목으로 잡고 이후 입력으로 덮어쓰지 않는다", () => {
+    let rec = reduceAgent(undefined, ev("UserPromptSubmit", { prompt: "첫 지시" }, 1000));
+    expect(rec.title).toBe("첫 지시");
+    rec = reduceAgent(rec, ev("UserPromptSubmit", { prompt: "두 번째 지시" }, 2000));
+    expect(rec.title).toBe("첫 지시");
+  });
+
+  it("여러 줄 입력은 첫 줄만, 공백은 접어서 한 줄로 만든다", () => {
+    const rec = reduceAgent(undefined, ev("UserPromptSubmit", { prompt: "\n\n  제목   줄\n본문\n" }));
+    expect(rec.title).toBe("제목 줄");
+  });
+
+  it("SessionStart로 세션이 새로 시작하면 제목을 비운다", () => {
+    let rec = reduceAgent(undefined, ev("UserPromptSubmit", { prompt: "첫 지시" }, 1000));
+    rec = reduceAgent(rec, ev("SessionStart", { source: "clear" }, 2000));
+    expect(rec.title).toBeNull();
+    rec = reduceAgent(rec, ev("UserPromptSubmit", { prompt: "새 지시" }, 3000));
+    expect(rec.title).toBe("새 지시");
+  });
+});
+
 describe("effectiveState", () => {
   it("agent 기록이 없으면 unknown", () => {
     expect(effectiveState(undefined, 1000, false)).toEqual({ state: "unknown", source: "none" });

@@ -7,6 +7,8 @@ export interface AgentRecord {
   source: string; // "hook" | "screen"
   toolName: string | null;
   prompt: string | null;
+  /** 이 세션의 첫 사용자 입력. 창 이름이 자동 생성일 때 라벨로 쓴다. */
+  title: string | null;
   lastEvent: string | null;
   lastTs: number;
   lastPromptTs: number | null;
@@ -37,6 +39,17 @@ export function normalizeToolName(name: unknown): string {
 export function isInteractiveTool(name: unknown): boolean {
   const n = normalizeToolName(name);
   return n === "askuserquestion" || n === "requestuserinput";
+}
+
+const TITLE_MAX = 120;
+
+// 첫 입력을 한 줄짜리 제목으로 줄인다. 여러 줄 붙여넣기를 그대로 들고 있을 이유가 없다.
+export function promptTitle(raw: unknown): string | null {
+  if (typeof raw !== "string") return null;
+  const line = raw.split("\n").map((l) => l.trim()).find((l) => l.length > 0);
+  if (!line) return null;
+  const collapsed = line.replace(/\s+/g, " ");
+  return collapsed.length > TITLE_MAX ? collapsed.slice(0, TITLE_MAX) : collapsed;
 }
 
 function parseSubagents(s: string): Record<string, "working"> {
@@ -74,6 +87,7 @@ function emptyRecord(tmuxPid: string, paneId: string): AgentRecord {
     source: "hook",
     toolName: null,
     prompt: null,
+    title: null,
     lastEvent: null,
     lastTs: 0,
     lastPromptTs: null,
@@ -94,6 +108,8 @@ export function reduceAgent(prev: AgentRecord | undefined, ev: RawEvent): AgentR
       next.source = "hook";
       next.toolName = null;
       next.prompt = typeof payload.prompt === "string" ? payload.prompt : null;
+      // 제목은 세션의 첫 입력만 잡는다. 이후 입력으로 덮어쓰면 라벨이 계속 흔들린다.
+      if (base.title == null) next.title = promptTitle(payload.prompt);
       next.lastPromptTs = ev.ts;
       break;
 
@@ -150,6 +166,7 @@ export function reduceAgent(prev: AgentRecord | undefined, ev: RawEvent): AgentR
       next.source = "hook";
       next.toolName = null;
       next.prompt = null;
+      next.title = null;
       next.subagents = "{}";
       return next;
 
