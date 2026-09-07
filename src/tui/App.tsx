@@ -63,6 +63,7 @@ const HELP_LINES = [
   "n      worktree 생성",
   "r      새로고침",
   "?      도움말 닫기",
+  "Ctrl-L 화면 다시 그리기",
   "q      종료",
   "",
   "▌ 청록=지금 창  회색=커서",
@@ -104,7 +105,7 @@ function saveMode(mode: ViewMode): void {
 export function App(): React.JSX.Element {
   const { exit } = useApp();
   const { stdin, isRawModeSupported } = useStdin();
-  const { columns } = useWindowSize();
+  const { columns, rows: termRows } = useWindowSize();
 
   const dbRef = useRef<Db | null>(null);
   const screenWaitingRef = useRef<Set<string>>(new Set());
@@ -119,6 +120,11 @@ export function App(): React.JSX.Element {
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [showHelp, setShowHelp] = useState(false);
   const [frame, setFrame] = useState(0);
+  // Ctrl-L 강제 새로고침용. ink는 출력이 이전과 같으면 아예 쓰지 않아서,
+  // 화면을 지운 뒤 다시 그리게 하려면 출력 문자열이 달라져야 한다(끝의 공백 하나로 바꾼다).
+  const [redraw, setRedraw] = useState(0);
+  // 목록이 pane보다 길면 잘라서 보여준다. 스크롤 위치는 렌더에서 바로 계산하므로 state가 아니라 ref다.
+  const scrollRef = useRef(0);
   // 사이드바가 들어 있는 창이 곧 지금 보고 있는 창이다. 선택 커서와 헷갈리지 않게 따로 표시한다.
   const [currentWindowId, setCurrentWindowId] = useState<string | null>(null);
 
@@ -370,6 +376,10 @@ export function App(): React.JSX.Element {
     else if (input === "r") void tick();
     else if (input === "n") setBranchInput("");
     else if (input === "?") setShowHelp((v) => !v);
+    else if (key.ctrl && input === "l") {
+      process.stdout.write("\x1b[H\x1b[2J");
+      setRedraw((v) => v + 1);
+    }
     else if (input === "q") {
       cleanupFromTui();
       exit();
@@ -377,21 +387,13 @@ export function App(): React.JSX.Element {
   });
 
   const cols = columns || SIDEBAR_WIDTH;
+  const height = termRows || 24;
 
-  // 화면에 그릴 줄과 그 줄이 가리키는 row를 같이 만든다. lineRows는 클릭 판정에 쓴다.
-  const lines: React.JSX.Element[] = [];
-  const lineRows: (Row | null)[] = [];
+  // 목록 줄과 그 줄이 가리키는 row를 같이 만든다. lineRows는 클릭 판정에 쓴다.
+  const body: { el: React.JSX.Element; row: Row | null }[] = [];
   const pushLine = (el: React.JSX.Element, row: Row | null): void => {
-    lines.push(el);
-    lineRows.push(row);
+    body.push({ el, row });
   };
-
-  pushLine(
-    <Text key="header" bold wrap="truncate-end">
-      {clip(`sort: ${mode}`, cols)}
-    </Text>,
-    null
-  );
 
   let ordinal = 0;
   for (const row of rows) {
@@ -402,7 +404,7 @@ export function App(): React.JSX.Element {
       const rule = "─".repeat(Math.max(0, cols - stringWidth(label) - 2));
       pushLine(
         <Text key={row.key} dimColor wrap="truncate-end">
-          {clip(`─${label}${rule}`, cols)}
+          {clip(`─${label}${rule}`, cols - 1)}
         </Text>,
         null
       );
@@ -411,7 +413,7 @@ export function App(): React.JSX.Element {
     if (row.kind === "group") {
       pushLine(
         <Text key={row.key} bold={row.depth === 0} dimColor wrap="truncate-end">
-          {clip(` ${indent}${row.name}`, cols)}
+          {clip(` ${indent}${row.name}`, cols - 1)}
         </Text>,
         null
       );
@@ -445,31 +447,76 @@ export function App(): React.JSX.Element {
       row
     );
   }
-  lineRowsRef.current = lineRows;
+
+  const footer: React.JSX.Element[] = [];
+  if (branchInput !== null) {
+    footer.push(
+      <Text key="branch" wrap="truncate-end">
+        branch: {branchInput}
+      </Text>
+    );
+  }
+  if (statusMsg) {
+    footer.push(
+      <Text key="status" dimColor wrap="truncate-end">
+        {statusMsg}
+      </Text>
+    );
+  }
+  if (error) {
+    footer.push(
+      <Text key="error" color="red" wrap="truncate-end">
+        error: {error}
+      </Text>
+    );
+  }
+  if (showHelp) {
+    for (const line of HELP_LINES) {
+      footer.push(
+        <Text key={`help:${line}`} dimColor wrap="truncate-end">
+          {line}
+        </Text>
+      );
+    }
+  } else {
+    footer.push(
+      <Text key="help" dimColor wrap="truncate-end">
+        ? help
+      </Text>
+    );
+  }
+
+  // 프레임이 pane보다 길면 화면이 스크롤되고, 그때부터 ink는 지울 줄을 못 찾아 프레임을 계속
+  // 아래에 덧붙인다(리사이즈를 반복하면 "sort: group"이 여러 개 쌓인다). 그래서 pane 안에 가둔다.
+  // 도움말을 펼치면 꼬리말만으로 pane을 넘길 수 있다. 꼬리말도 잘라야 프레임이 pane 안에 남는다.
+  const shownFooter = footer.slice(0, Math.max(0, height - 2));
+  // 0까지 허용해야 한다. 1을 하한으로 두면 pane이 한 줄일 때 머리글 + 한 줄로 한 줄 넘친다.
+  const budget = Math.max(0, height - 1 - shownFooter.length);
+  const anchorKey = selectedKey ?? rows.find((r) => r.windowId === currentWindowId)?.key ?? null;
+  const anchor = anchorKey === null ? -1 : body.findIndex((l) => l.row?.key === anchorKey);
+  let start = Math.min(scrollRef.current, Math.max(0, body.length - budget));
+  if (anchor >= 0) {
+    if (anchor < start) start = anchor;
+    else if (anchor >= start + budget) start = anchor - budget + 1;
+  }
+  start = Math.max(0, start);
+  scrollRef.current = start;
+
+  const visible = body.slice(start, start + budget);
+  const above = start;
+  const below = Math.max(0, body.length - start - budget);
+  const scrollHint = `${above > 0 ? ` ↑${above}` : ""}${below > 0 ? ` ↓${below}` : ""}`;
+
+  // 클릭 판정용. 0번은 머리글 줄이다.
+  lineRowsRef.current = [null, ...visible.map((l) => l.row)];
 
   return (
     <Box flexDirection="column" width="100%">
-      {lines}
-      {branchInput !== null && <Text wrap="truncate-end">branch: {branchInput}</Text>}
-      {statusMsg && (
-        <Text dimColor wrap="truncate-end">
-          {statusMsg}
-        </Text>
-      )}
-      {error && (
-        <Text color="red" wrap="truncate-end">
-          error: {error}
-        </Text>
-      )}
-      {showHelp ? (
-        HELP_LINES.map((line) => (
-          <Text key={line} dimColor wrap="truncate-end">
-            {line}
-          </Text>
-        ))
-      ) : (
-        <Text dimColor>? help</Text>
-      )}
+      <Text bold wrap="truncate-end">
+        {clip(`sort: ${mode}${scrollHint}${" ".repeat(redraw % 2)}`, cols - 1)}
+      </Text>
+      {visible.map((l) => l.el)}
+      {shownFooter}
     </Box>
   );
 }
