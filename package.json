@@ -1,0 +1,30 @@
+{
+  "name": "hive",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "hive": "./dist/cli.js"
+  },
+  "engines": {
+    "node": ">=22.12"
+  },
+  "scripts": {
+    "dev": "tsx src/cli.tsx",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "commander": "^15.0.0",
+    "ink": "^7.1.1",
+    "react": "^19.2.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.4.1",
+    "@types/react": "^19",
+    "tsx": "^4.23.13",
+    "typescript": "^7",
+    "vitest": "^5.0.0"
+  }
+}
