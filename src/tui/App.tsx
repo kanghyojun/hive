@@ -125,6 +125,8 @@ export function App(): React.JSX.Element {
   const [redraw, setRedraw] = useState(0);
   // 목록이 pane보다 길면 잘라서 보여준다. 스크롤 위치는 렌더에서 바로 계산하므로 state가 아니라 ref다.
   const scrollRef = useRef(0);
+  // 직전에 그린 줄 수. 강제 다시 그리기에서 커서를 어디에 놓을지 정하는 데 쓴다.
+  const frameLinesRef = useRef(1);
   // 사이드바가 들어 있는 창이 곧 지금 보고 있는 창이다. 선택 커서와 헷갈리지 않게 따로 표시한다.
   const [currentWindowId, setCurrentWindowId] = useState<string | null>(null);
 
@@ -224,6 +226,9 @@ export function App(): React.JSX.Element {
   }, [hasWorking]);
 
   const selectedRow = rows.find((r) => r.key === selectedKey);
+  // 창으로 옮겨가면 커서를 지우기 때문에 평소에는 커서가 없다. 그때 s나 n이 아무 일도 안 하면
+  // 고장난 것처럼 보인다. 커서가 없으면 지금 보고 있는 창을 대상으로 삼는다.
+  const actionRow = selectedRow ?? windowRows.find((r) => r.windowId === currentWindowId);
 
   // 선택한 window가 사라지면 커서를 비운다. 비어 있는 상태가 정상이다(이동 직후가 그렇다).
   useEffect(() => {
@@ -268,11 +273,11 @@ export function App(): React.JSX.Element {
 
   const toggleSleep = useCallback(() => {
     const db = dbRef.current;
-    if (!selectedRow || selectedRow.kind !== "window" || !db) return;
+    if (!actionRow || !db) return;
     const server = serverInfo();
-    db.setSleep(server.startTime, selectedRow.windowId, !selectedRow.sleep);
+    db.setSleep(server.startTime, actionRow.windowId, !actionRow.sleep);
     void tick();
-  }, [selectedRow, tick]);
+  }, [actionRow, tick]);
 
   const toggleMode = useCallback(() => {
     setMode((m) => {
@@ -285,16 +290,34 @@ export function App(): React.JSX.Element {
   const submitBranch = useCallback(
     (branch: string) => {
       setBranchInput(null);
-      if (!branch.trim() || !selectedRow) return;
+      if (!branch.trim() || !actionRow) return;
       try {
-        const result = wtNew({ branch: branch.trim(), repo: selectedRow.repoRoot ?? selectedRow.cwd });
+        const result = wtNew({ branch: branch.trim(), repo: actionRow.repoRoot ?? actionRow.cwd });
         setStatusMsg(`worktree: ${result.path}`);
       } catch (err) {
         setStatusMsg(err instanceof Error ? err.message : String(err));
       }
     },
-    [selectedRow]
+    [actionRow]
   );
+
+  // ink는 증분 렌더를 하면서 "커서가 이전 프레임의 마지막 줄에 있다"고 가정하고 cursorUp으로
+  // 거슬러 올라간다. 리사이즈로 화면이 접히거나 밀리면 그 가정이 깨져 프레임이 계속 아래에 쌓인다.
+  // 그래서 화면을 지우고 ink가 기대하는 자리에 커서를 놓은 뒤, 모든 줄을 다시 쓰게 만든다.
+  const forceRedraw = useCallback(() => {
+    const height = process.stdout.rows || 24;
+    const row = Math.min(Math.max(1, frameLinesRef.current), height);
+    process.stdout.write(`\x1b[2J\x1b[${row};1H`);
+    setRedraw((v) => v + 1);
+  }, []);
+
+  useEffect(() => {
+    const onResize = () => forceRedraw();
+    process.stdout.on("resize", onResize);
+    return () => {
+      process.stdout.off("resize", onResize);
+    };
+  }, [forceRedraw]);
 
   // 마우스 핸들러가 매 렌더 새로 만들어지는 rows/콜백을 직접 잡으면 리스너를 떼고 붙이게 된다.
   // 등록 이펙트는 stdin에만 의존시키고 최신 값은 ref로 읽는다.
@@ -370,16 +393,13 @@ export function App(): React.JSX.Element {
 
     if (input === "j" || key.downArrow) moveSelection(1);
     else if (input === "k" || key.upArrow) moveSelection(-1);
-    else if (key.return) activateRow(selectedRow);
+    else if (key.return) activateRow(actionRow);
     else if (input === "s") toggleSleep();
     else if (input === "g") toggleMode();
     else if (input === "r") void tick();
     else if (input === "n") setBranchInput("");
     else if (input === "?") setShowHelp((v) => !v);
-    else if (key.ctrl && input === "l") {
-      process.stdout.write("\x1b[H\x1b[2J");
-      setRedraw((v) => v + 1);
-    }
+    else if (key.ctrl && input === "l") forceRedraw();
     else if (input === "q") {
       cleanupFromTui();
       exit();
@@ -388,6 +408,13 @@ export function App(): React.JSX.Element {
 
   const cols = columns || SIDEBAR_WIDTH;
   const height = termRows || 24;
+  // ink는 이전과 같은 줄은 다시 쓰지 않는다. 강제 다시 그리기로 화면을 지운 뒤에도 그러면
+  // 지워진 자리가 빈 채로 남는다. 그래서 모든 줄을 "바뀐 줄"로 만들어야 한다.
+  // 끝에 공백을 붙였다 뗐다 하되 자르는 폭도 같이 줄여서, 줄 폭은 그대로 둔다.
+  // 폭 0짜리 문자를 쓰면 터미널에 따라 네모로 보일 수 있어 쓰지 않는다.
+  const pad = redraw % 2;
+  const tail = pad ? " " : "";
+  const width = cols - 1 - pad;
 
   // 목록 줄과 그 줄이 가리키는 row를 같이 만든다. lineRows는 클릭 판정에 쓴다.
   const body: { el: React.JSX.Element; row: Row | null }[] = [];
@@ -404,7 +431,7 @@ export function App(): React.JSX.Element {
       const rule = "─".repeat(Math.max(0, cols - stringWidth(label) - 2));
       pushLine(
         <Text key={row.key} dimColor wrap="truncate-end">
-          {clip(`─${label}${rule}`, cols - 1)}
+          {clip(`─${label}${rule}`, width) + tail}
         </Text>,
         null
       );
@@ -413,7 +440,7 @@ export function App(): React.JSX.Element {
     if (row.kind === "group") {
       pushLine(
         <Text key={row.key} bold={row.depth === 0} dimColor wrap="truncate-end">
-          {clip(` ${indent}${row.name}`, cols - 1)}
+          {clip(` ${indent}${row.name}`, width) + tail}
         </Text>,
         null
       );
@@ -441,7 +468,7 @@ export function App(): React.JSX.Element {
           dimColor={row.sleep}
           color={row.sleep ? undefined : STATE_COLOR[row.state]}
         >
-          {clip(`${indent}${num} ${icon} ${label}`, cols - 1)}
+          {clip(`${indent}${num} ${icon} ${label}`, width) + tail}
         </Text>
       </Text>,
       row
@@ -453,6 +480,7 @@ export function App(): React.JSX.Element {
     footer.push(
       <Text key="branch" wrap="truncate-end">
         branch: {branchInput}
+        {tail}
       </Text>
     );
   }
@@ -460,6 +488,7 @@ export function App(): React.JSX.Element {
     footer.push(
       <Text key="status" dimColor wrap="truncate-end">
         {statusMsg}
+        {tail}
       </Text>
     );
   }
@@ -467,6 +496,7 @@ export function App(): React.JSX.Element {
     footer.push(
       <Text key="error" color="red" wrap="truncate-end">
         error: {error}
+        {tail}
       </Text>
     );
   }
@@ -475,6 +505,7 @@ export function App(): React.JSX.Element {
       footer.push(
         <Text key={`help:${line}`} dimColor wrap="truncate-end">
           {line}
+          {tail}
         </Text>
       );
     }
@@ -482,6 +513,7 @@ export function App(): React.JSX.Element {
     footer.push(
       <Text key="help" dimColor wrap="truncate-end">
         ? help
+        {tail}
       </Text>
     );
   }
@@ -509,11 +541,12 @@ export function App(): React.JSX.Element {
 
   // 클릭 판정용. 0번은 머리글 줄이다.
   lineRowsRef.current = [null, ...visible.map((l) => l.row)];
+  frameLinesRef.current = 1 + visible.length + shownFooter.length;
 
   return (
     <Box flexDirection="column" width="100%">
       <Text bold wrap="truncate-end">
-        {clip(`sort: ${mode}${scrollHint}${" ".repeat(redraw % 2)}`, cols - 1)}
+        {clip(`sort: ${mode}${scrollHint}`, width) + tail}
       </Text>
       {visible.map((l) => l.el)}
       {shownFooter}

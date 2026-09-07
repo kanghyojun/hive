@@ -224,13 +224,11 @@ export async function openDb(path: string): Promise<Db> {
       stmts.setSleep.run(serverKey, windowId, sleep ? 1 : 0);
     },
     pruneWindowFlags(serverKey, liveWindowIds) {
-      raw.exec(`DELETE FROM window_flags WHERE server_key != '${serverKey.replace(/'/g, "''")}'`);
-      if (liveWindowIds.length === 0) {
-        raw.exec(
-          `DELETE FROM window_flags WHERE server_key = '${serverKey.replace(/'/g, "''")}'`
-        );
-        return;
-      }
+      // 다른 server_key까지 지우면 안 된다. tmux 서버가 여럿이면 사이드바끼리 서로의
+      // sleep 표시를 1초마다 지워버린다. 죽은 서버의 찌꺼기는 몇 줄이라 그냥 둔다.
+      // 살아 있는 window를 하나도 못 받았으면 tmux 조회가 실패한 것이다. 그때 지우면
+      // 일시적인 실패 한 번에 sleep이 전부 풀린다. 아무것도 하지 않는다.
+      if (liveWindowIds.length === 0) return;
       const placeholders = liveWindowIds.map(() => "?").join(",");
       const stmt = raw.prepare(
         `DELETE FROM window_flags WHERE server_key = ? AND window_id NOT IN (${placeholders})`
