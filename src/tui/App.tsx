@@ -66,7 +66,8 @@ export function App(): React.JSX.Element {
 
   const [rows, setRows] = useState<Row[]>([]);
   const [mode, setMode] = useState<ViewMode>(() => loadMode());
-  const [selected, setSelected] = useState(0);
+  // 인덱스가 아니라 key로 들고 있어야 tick마다 정렬이 바뀌어도 선택이 다른 window로 미끄러지지 않는다.
+  const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [branchInput, setBranchInput] = useState<string | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
@@ -142,21 +143,24 @@ export function App(): React.JSX.Element {
   }, [mode, tick]);
 
   const windowRows = rows.filter((r) => r.kind === "window");
+  const selectedRow = rows.find((r) => r.key === selectedKey);
+
+  // 선택한 window가 사라졌거나 아직 아무것도 안 골랐으면 첫 window로 돌려놓는다.
+  useEffect(() => {
+    if (windowRows.length === 0) return;
+    if (selectedKey !== null && windowRows.some((r) => r.key === selectedKey)) return;
+    setSelectedKey(windowRows[0].key);
+  }, [windowRows, selectedKey]);
 
   const moveSelection = useCallback(
     (delta: number) => {
       if (windowRows.length === 0) return;
-      setSelected((prev) => {
-        const currentRow = rows[prev];
-        const currentWindowIdx = currentRow
-          ? windowRows.findIndex((r) => r.key === currentRow.key)
-          : -1;
-        const base = currentWindowIdx === -1 ? 0 : currentWindowIdx;
-        const nextWindowIdx = (base + delta + windowRows.length) % windowRows.length;
-        return rows.findIndex((r) => r.key === windowRows[nextWindowIdx].key);
-      });
+      const current = windowRows.findIndex((r) => r.key === selectedKey);
+      const base = current === -1 ? 0 : current;
+      const next = (base + delta + windowRows.length) % windowRows.length;
+      setSelectedKey(windowRows[next].key);
     },
-    [rows, windowRows]
+    [windowRows, selectedKey]
   );
 
   const activateRow = useCallback((row: Row | undefined) => {
@@ -173,13 +177,12 @@ export function App(): React.JSX.Element {
   }, []);
 
   const toggleSleep = useCallback(() => {
-    const row = rows[selected];
     const db = dbRef.current;
-    if (!row || row.kind !== "window" || !db) return;
+    if (!selectedRow || selectedRow.kind !== "window" || !db) return;
     const server = serverInfo();
-    db.setSleep(server.startTime, row.windowId, !row.sleep);
+    db.setSleep(server.startTime, selectedRow.windowId, !selectedRow.sleep);
     void tick();
-  }, [rows, selected, tick]);
+  }, [selectedRow, tick]);
 
   const toggleMode = useCallback(() => {
     setMode((m) => {
@@ -192,22 +195,38 @@ export function App(): React.JSX.Element {
   const submitBranch = useCallback(
     (branch: string) => {
       setBranchInput(null);
-      const row = rows[selected];
-      if (!branch.trim() || !row) return;
+      if (!branch.trim() || !selectedRow) return;
       try {
-        const result = wtNew({ branch: branch.trim(), repo: row.repoRoot ?? row.cwd });
+        const result = wtNew({ branch: branch.trim(), repo: selectedRow.repoRoot ?? selectedRow.cwd });
         setStatusMsg(`worktree: ${result.path}`);
       } catch (err) {
         setStatusMsg(err instanceof Error ? err.message : String(err));
       }
     },
-    [rows, selected]
+    [selectedRow]
   );
 
-  // 마우스: 클릭으로 선택+이동, 휠로 스크롤. SGR 시퀀스는 useInput이 아닌 stdin 'data'에서 직접 파싱한다(실측).
+  // 마우스 핸들러가 매 렌더 새로 만들어지는 rows/콜백을 직접 잡으면 리스너를 떼고 붙이게 된다.
+  // 등록 이펙트는 stdin에만 의존시키고 최신 값은 ref로 읽는다.
+  const mouseDepsRef = useRef({ rows, moveSelection, activateRow });
+  useEffect(() => {
+    mouseDepsRef.current = { rows, moveSelection, activateRow };
+  });
+
+  // 마우스 모드 on/off는 마운트/언마운트에서 한 번씩만 한다.
+  // rows를 의존성에 두면 1초 tick마다 \x1b[?1000;1006h/l이 다시 나가면서
+  // 그 사이 클릭이 pane으로 전달되지 않고 tmux 기본 바인딩으로 샌다.
   useEffect(() => {
     if (!stdin || !isRawModeSupported) return;
     process.stdout.write("\x1b[?1000;1006h");
+    return () => {
+      process.stdout.write("\x1b[?1000;1006l");
+    };
+  }, [stdin, isRawModeSupported]);
+
+  // 클릭으로 선택+이동, 휠로 스크롤. SGR 시퀀스는 useInput이 아닌 stdin 'data'에서 직접 파싱한다(실측).
+  useEffect(() => {
+    if (!stdin || !isRawModeSupported) return;
     const headerLines = 2;
     const onData = (chunk: Buffer | string) => {
       const str = chunk.toString();
@@ -217,16 +236,16 @@ export function App(): React.JSX.Element {
         const btn = Number(m[1]);
         const tmuxRow = Number(m[3]);
         const isRelease = m[4] === "m";
+        const deps = mouseDepsRef.current;
         if (btn === 64) {
-          moveSelection(-1);
+          deps.moveSelection(-1);
         } else if (btn === 65) {
-          moveSelection(1);
+          deps.moveSelection(1);
         } else if (btn === 0 && !isRelease) {
-          const idx = tmuxRow - headerLines - 1;
-          const row = rows[idx];
+          const row = deps.rows[tmuxRow - headerLines - 1];
           if (row && row.kind === "window") {
-            setSelected(idx);
-            activateRow(row);
+            setSelectedKey(row.key);
+            deps.activateRow(row);
           }
         }
       }
@@ -234,9 +253,8 @@ export function App(): React.JSX.Element {
     stdin.on("data", onData);
     return () => {
       stdin.off("data", onData);
-      process.stdout.write("\x1b[?1000;1006l");
     };
-  }, [stdin, isRawModeSupported, rows, moveSelection, activateRow]);
+  }, [stdin, isRawModeSupported]);
 
   useInput((input, key) => {
     if (input.startsWith("[<")) return; // 마우스 시퀀스, 위 stdin 리스너가 처리
@@ -251,7 +269,7 @@ export function App(): React.JSX.Element {
 
     if (input === "j" || key.downArrow) moveSelection(1);
     else if (input === "k" || key.upArrow) moveSelection(-1);
-    else if (key.return) activateRow(rows[selected]);
+    else if (key.return) activateRow(selectedRow);
     else if (input === "s") toggleSleep();
     else if (input === "g") toggleMode();
     else if (input === "r") void tick();
@@ -272,8 +290,8 @@ export function App(): React.JSX.Element {
       <Text dimColor wrap="truncate-end">
         j/k move Enter go s sleep g group n new q quit
       </Text>
-      {rows.map((row, idx) => {
-        const isSelected = idx === selected;
+      {rows.map((row) => {
+        const isSelected = row.key === selectedKey;
         const indent = "  ".repeat(row.depth);
         if (row.kind === "group") {
           return (
