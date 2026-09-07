@@ -63,7 +63,10 @@ export interface WorktreeEntry {
 export function listWorktrees(repoRoot: string): WorktreeEntry[] {
   let out: string;
   try {
-    out = execFileSync("git", ["-C", repoRoot, "worktree", "list", "--porcelain"], { encoding: "utf8" });
+    out = execFileSync("git", ["-C", repoRoot, "worktree", "list", "--porcelain"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"],
+    });
   } catch {
     return [];
   }
@@ -107,7 +110,9 @@ export function worktreeAdd(opts: { repoRoot: string; branch: string; path: stri
     args.push("-b", opts.branch, opts.path);
     if (opts.base) args.push(opts.base);
   }
-  execFileSync("git", args, { encoding: "utf8" });
+  // stdio를 안 주면 git의 "작업 트리 준비 중" 진행 메시지가 부모 stderr로 흘러 TUI 프레임을 깨뜨린다.
+  // 실패 시 stderr는 execFileSync가 던지는 Error의 message에 붙으므로 호출부 표시에는 지장이 없다.
+  execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 }
 
 export function worktreeBasePath(repoRoot: string): string {
