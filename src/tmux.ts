@@ -168,6 +168,47 @@ export function newWindow(opts: { name: string; cwd: string; command: string }):
   return tmux(["new-window", "-P", "-F", "#{window_id}", "-n", opts.name, "-c", opts.cwd, opts.command]).trim();
 }
 
+// tmux는 세션 이름에서 ., : 를 특별 취급한다(: 는 target 구분자, . 는 pane 구분자).
+// 그대로 넘기면 이후 -t <name> 조회가 엉뚱한 대상을 가리키므로 여기서 -로 바꾼다.
+export function sanitizeSessionName(name: string): string {
+  return name.replaceAll(/[.:\s]/g, "-").replace(/^-+|-+$/g, "") || "hive";
+}
+
+export function sessionExists(name: string): boolean {
+  try {
+    // =을 붙여야 prefix 매칭이 아니라 정확히 같은 이름만 찾는다.
+    tmux(["has-session", "-t", `=${name}`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export interface NewSessionResult {
+  sessionName: string;
+  windowId: string;
+}
+
+export function newSession(opts: { name: string; cwd: string; command: string }): NewSessionResult {
+  const out = tmux([
+    "new-session",
+    "-d",
+    "-P",
+    "-F",
+    "#{session_name}\t#{window_id}",
+    "-s",
+    opts.name,
+    // 세션 이름만 주면 첫 window 이름이 실행 명령(zsh)이 되어 사이드바에 브랜치가 안 보인다.
+    "-n",
+    opts.name,
+    "-c",
+    opts.cwd,
+    opts.command,
+  ]).trim();
+  const [sessionName, windowId] = out.split("\t");
+  return { sessionName, windowId };
+}
+
 export function splitLeft(opts: { target: string; width: number; command: string }): string {
   return tmux([
     "split-window",

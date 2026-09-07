@@ -66,7 +66,7 @@ bind W command-prompt -p "branch:" "run-shell -b \"<node> <cli.js> --pane '#{pan
 - `Enter`: 선택한 window로 이동 (사이드바는 그 window를 따라옵니다)
 - `s`: 선택한 window sleep 토글
 - `g`: `recent`/`group` 보기 전환
-- `n`: branch 이름 입력 후 그 저장소에 `wt new` 실행
+- `n`: branch 이름 입력 후 그 저장소에 `wt new` 실행 (새 세션이 열리고 그리로 이동합니다)
 - `r`: 강제 새로고침
 - `q`: 종료 (hook/옵션 정리 후 pane이 닫힙니다)
 
@@ -79,7 +79,11 @@ hive wt init-script [--repo <path>] [--force]   # <repo>/.hive/init.sh 템플릿
 hive wt new <branch> [--repo <path>] [--base <ref>] [--no-init]
 ```
 
-`wt new`는 `HIVE_WORKTREE_BASE` 아래에 git worktree를 만들고, init script(`HIVE_INIT_SCRIPT` env > `<repo>/.hive/init.sh` 순으로 찾음)를 실행한 뒤, tmux window를 하나 엽니다(왼쪽 쓰레드뷰, 오른쪽 init 로그 → 셸). init script 실행 로그는 `~/.hive/logs/wt-<branch>.log`에 남습니다. init script가 실패해도 worktree와 window는 그대로 유지되고 exit code만 알립니다.
+`wt new`는 `HIVE_WORKTREE_BASE` 아래에 git worktree를 만들고, init script(`HIVE_INIT_SCRIPT` env > `<repo>/.hive/init.sh` 순으로 찾음)를 실행한 뒤, **tmux 세션을 하나 새로 엽니다**(왼쪽 쓰레드뷰, 오른쪽 init 로그 → 셸). worktree 하나가 세션 하나입니다. 세션 이름은 브랜치명이고(`/`, `.`, `:`, 공백은 `-`로 바꿉니다), 같은 이름이 이미 있으면 `-2`, `-3`을 붙입니다. 세션을 만든 뒤에는 붙어 있는 클라이언트를 그 세션으로 옮깁니다(`switched: false`면 옮길 클라이언트가 없었다는 뜻이고, 세션은 그대로 만들어져 있습니다).
+
+세션을 새로 여는 건 `wt new`뿐입니다. 같은 세션 안에 손으로 window를 열어 다른 worktree에서 작업해도 사이드바는 그대로 잡습니다. 목록은 세션이 아니라 window 단위입니다.
+
+init script 실행 로그는 `~/.hive/logs/wt-<branch>.log`에 남습니다. init script가 실패해도 worktree와 세션은 그대로 유지되고 exit code만 알립니다.
 
 ## 환경변수
 
