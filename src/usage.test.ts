@@ -125,6 +125,70 @@ describe("formatUsageLines", () => {
   const claude = parseClaudeSnapshot(SNAPSHOT) as AgentUsage;
   const codex = parseCodexRateLimits(CODEX_SEP) as AgentUsage;
 
+  // 계획서가 못 박은 형식: "글리프 라벨 막대10칸 퍼센트3칸% 두칸 남은시간".
+  // 색과 폭만 보면 formatDuration이 통째로 깨져도 통과한다. 문자열을 그대로 단언한다.
+  it("한 줄 형식은 글리프·라벨·막대 10칸·3칸 퍼센트·남은 시간이다", () => {
+    // resets_at 01:20 - now 00:02 = 78분 → 1h18m
+    expect(formatUsageLines([claude], now, 41)[1].text).toBe("✱ 5h ▓▓▓▓░░░░░░  42%  1h18m");
+  });
+
+  it("resets_at이 없으면 남은 시간 자리를 통째로 비운다", () => {
+    expect(formatUsageLines([claude], now, 41)[2].text).toBe("✱ 7d ▓▓░░░░░░░░  18%");
+  });
+
+  it("막대는 항상 10칸이고 퍼센트는 3칸으로 오른쪽 맞춤한다", () => {
+    const edge: AgentUsage = {
+      agent: "claude",
+      windows: [
+        { label: "5h", usedPercent: 0, resetsAt: null },
+        { label: "7d", usedPercent: 100, resetsAt: null },
+      ],
+      updatedAt: null,
+    };
+    const lines = formatUsageLines([edge], now, 41).map((l) => l.text);
+    expect(lines[1]).toBe("✱ 5h ░░░░░░░░░░   0%");
+    expect(lines[2]).toBe("✱ 7d ▓▓▓▓▓▓▓▓▓▓ 100%");
+  });
+
+  it("하루가 넘게 남으면 d, 시간만 남으면 h, 분만 남으면 m으로 적는다", () => {
+    const mk = (ms: number): string => {
+      const u: AgentUsage = { agent: "claude", windows: [{ label: "7d", usedPercent: 1, resetsAt: now + ms }], updatedAt: null };
+      return formatUsageLines([u], now, 41)[1].text;
+    };
+    expect(mk(90 * 60_000)).toMatch(/ 1h30m$/);
+    expect(mk(2 * 3_600_000)).toMatch(/ 2h$/);
+    expect(mk(45 * 60_000)).toMatch(/ 45m$/);
+    expect(mk(50 * 3_600_000)).toMatch(/ 2d2h$/);
+  });
+
+  it("갱신 시각 줄은 note와 경과 시간을 함께 적는다", () => {
+    // [0] 머리글 [1] 5h [2] 7d [3] 갱신 [4] codex 안내
+    expect(formatUsageLines([claude], now, 41)[3].text).toBe("  갱신 2분 전");
+    // codex는 note가 있으면 "갱신"을 안 붙인다. 마지막 응답이 14시간 전이라 오래됨도 같이 붙는다.
+    expect(formatUsageLines([codex], now, 41)[3].text).toBe("  마지막 응답 기준, 14시간 전 (오래됨)");
+  });
+
+  it("window_minutes가 없으면 없는 창 이름을 지어내지 않는다", () => {
+    const raw = JSON.stringify({
+      timestamp: "2026-09-07T10:00:00.000Z",
+      payload: { type: "token_count", rate_limits: { primary: { used_percent: 8 } } },
+    });
+    const usage = parseCodexRateLimits(raw) as AgentUsage;
+    expect(usage.windows[0].label).toBe("?");
+    expect(formatUsageLines([usage], now, 41)[2].text).toBe("⬡ ?  ▓░░░░░░░░░   8%");
+  });
+
+  it("이미 지난 창은 지난 창이라고 적고 경고색을 뺀다", () => {
+    const stale: AgentUsage = {
+      agent: "claude",
+      windows: [{ label: "5h", usedPercent: 95, resetsAt: now - 60_000 }],
+      updatedAt: null,
+    };
+    const line = formatUsageLines([stale], now, 41)[1];
+    expect(line.text).toBe("✱ 5h ▓▓▓▓▓▓▓▓▓▓  95%  지난 창");
+    expect(line.color).toBeUndefined();
+  });
+
   it("90% 이상은 red", () => {
     const hot: AgentUsage = { agent: "claude", windows: [{ label: "5h", usedPercent: 93, resetsAt: null }], updatedAt: now };
     expect(formatUsageLines([hot], now, 41)[1].color).toBe("red");

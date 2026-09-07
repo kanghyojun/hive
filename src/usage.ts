@@ -113,7 +113,12 @@ export function findLastCodexUsage(text: string): AgentUsage | null {
 }
 
 // 창 이름은 primary/secondary 자리가 아니라 window_minutes로 정한다. 플랜에 따라 자리가 바뀐다(실측).
-function windowLabel(minutes: number): string {
+// 값이 없거나 0이면 "0h" 같은 없는 창 이름을 지어내지 말고 모른다고 표시한다.
+const UNKNOWN_WINDOW_LABEL = "?";
+function windowLabel(minutes: unknown): string {
+  if (typeof minutes !== "number" || !Number.isFinite(minutes) || minutes <= 0) {
+    return UNKNOWN_WINDOW_LABEL;
+  }
   if (minutes === 300) return "5h";
   if (minutes === 10080) return "7d";
   return `${Math.round(minutes / 60)}h`;
@@ -136,7 +141,7 @@ export function parseCodexRateLimits(line: string): AgentUsage | null {
     const w = value as { used_percent?: unknown; window_minutes?: unknown; resets_at?: unknown };
     if (typeof w.used_percent !== "number") continue;
     windows.push({
-      label: windowLabel(typeof w.window_minutes === "number" ? w.window_minutes : 0),
+      label: windowLabel(w.window_minutes),
       usedPercent: w.used_percent,
       resetsAt: typeof w.resets_at === "number" ? w.resets_at * 1000 : null,
     });
@@ -201,8 +206,9 @@ export function readTail(path: string, maxBytes: number): string {
     const size = fstatSync(fd).size;
     const length = Math.min(size, maxBytes);
     const buf = Buffer.allocUnsafe(length);
-    readSync(fd, buf, 0, length, size - length);
-    return buf.toString("utf8");
+    // allocUnsafe는 남의 메모리가 그대로 들어 있다. 실제로 읽은 바이트까지만 문자열로 바꾼다.
+    const read = readSync(fd, buf, 0, length, size - length);
+    return buf.toString("utf8", 0, read);
   } catch {
     return "";
   } finally {
@@ -278,9 +284,18 @@ export function formatUsageLines(
 
     for (const w of usage.windows) {
       const percent = Math.round(w.usedPercent);
-      const remain = w.resetsAt !== null && w.resetsAt > now ? formatDuration(w.resetsAt - now) : "";
-      const color = percent >= DANGER_PERCENT ? "red" : percent >= WARN_PERCENT ? "yellow" : undefined;
-      push(`${glyph} ${w.label} ${bar(w.usedPercent)} ${String(percent).padStart(3)}%  ${remain}`.trimEnd(), color);
+      // 창이 이미 지났으면 이 %는 끝난 창의 값이다. 그대로 두면 경고색만 남아 거짓 알람이 된다.
+      const expired = w.resetsAt !== null && w.resetsAt <= now;
+      const remain = expired ? "지난 창" : w.resetsAt !== null ? formatDuration(w.resetsAt - now) : "";
+      const color = expired
+        ? undefined
+        : percent >= DANGER_PERCENT
+          ? "red"
+          : percent >= WARN_PERCENT
+            ? "yellow"
+            : undefined;
+      const label = w.label.padEnd(2);
+      push(`${glyph} ${label} ${bar(w.usedPercent)} ${String(percent).padStart(3)}%  ${remain}`.trimEnd(), color);
     }
 
     const parts: string[] = [];
