@@ -44,11 +44,19 @@ install은 쓰기 전에 같은 디렉토리에 `settings.json.hive-backup-<ISO�
 `~/.tmux.conf`에 아래를 붙이고 경로는 `hive paths` 출력값으로 채웁니다.
 
 ```
-bind V run-shell -b "<node> <cli.js> sidebar toggle"
-bind W command-prompt -p "branch:" "run-shell -b '<node> <cli.js> wt new %% --repo #{pane_current_path}'"
+bind V run-shell -b "<node> <cli.js> --pane '#{pane_id}' sidebar toggle"
+bind W command-prompt -p "branch:" "run-shell -b \"<node> <cli.js> --pane '#{pane_id}' wt new %% --repo '#{pane_current_path}'\""
 ```
 
+`--pane '#{pane_id}'`를 빼면 안 됩니다. tmux가 `run-shell`로 실행하는 명령에는 `TMUX_PANE`이
+들어오지 않아서(`-t`를 줘도 마찬가지) hive가 어느 pane에서 불렸는지 알 수 없습니다. `run-shell`은
+`#{...}` 포맷을 확장하므로 이렇게 pane id를 직접 넘깁니다. 옵션이 없으면 활성 pane을 조회하는
+폴백이 돌지만, 클라이언트가 여러 개 붙어 있으면 엉뚱한 pane을 집을 수 있습니다.
+
 사이드바로 포커스를 옮기는 별도 바인딩은 없습니다. 기존 `prefix+h`(`select-pane -L`)를 그대로 씁니다.
+
+바인딩이 조용히 실패하면 tmux는 `'...' returned 1`만 보여줍니다. 원인은
+`~/.hive/logs/cli-error.log`에 스택으로 남습니다.
 
 ## 키
 

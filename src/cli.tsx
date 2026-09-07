@@ -5,7 +5,8 @@ process.on("warning", (w) => {
   if (w.name !== "ExperimentalWarning") console.error(w);
 });
 
-import { resolve } from "node:path";
+import { appendFileSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { Command } from "commander";
 import React from "react";
 import { render } from "ink";
@@ -15,11 +16,12 @@ import {
   ensureDirs,
   hiveHome,
   hookScriptPath,
+  logsDir,
   selfCommand,
   setHiveHomeOverride,
   spoolDir,
 } from "./paths.js";
-import { setTmuxSocketOverride, listPanes, serverInfo } from "./tmux.js";
+import { setPaneOverride, setTmuxSocketOverride, listPanes, serverInfo } from "./tmux.js";
 import { hideSidebar, showSidebar, toggleSidebar, cleanupFromTui } from "./sidebar.js";
 import { installHooks, statusHooks, uninstallHooks } from "./hookInstall.js";
 import { createInitScript, listWorktrees, wtNew, wtRunInit } from "./worktree.js";
@@ -33,12 +35,14 @@ program
   .name("hive")
   .description("tmux 위에서 여러 window의 AI agent 상태를 보여주는 쓰레드뷰 프로토타입")
   .option("--home <dir>", "HIVE_HOME 덮어쓰기")
-  .option("--tmux-socket <path>", "tmux 소켓 경로 덮어쓰기");
+  .option("--tmux-socket <path>", "tmux 소켓 경로 덮어쓰기")
+  .option("--pane <id>", "기준 pane id. tmux 바인딩에서 '#{pane_id}'로 넘긴다");
 
 program.hook("preAction", () => {
-  const opts = program.opts<{ home?: string; tmuxSocket?: string }>();
+  const opts = program.opts<{ home?: string; tmuxSocket?: string; pane?: string }>();
   if (opts.home) setHiveHomeOverride(resolve(opts.home));
   if (opts.tmuxSocket) setTmuxSocketOverride(opts.tmuxSocket);
+  if (opts.pane) setPaneOverride(opts.pane);
 });
 
 program
@@ -213,4 +217,22 @@ program
     console.log(`hiveHome\t${hiveHome()}`);
   });
 
-await program.parseAsync(process.argv);
+try {
+  await program.parseAsync(process.argv);
+} catch (err) {
+  // tmux 바인딩(run-shell)으로 돌면 stderr가 어디에도 표시되지 않고 tmux는 "returned 1"만 알려준다.
+  // 원인을 추적할 곳이 필요해 스택을 로그 파일에 남긴다.
+  const message = err instanceof Error ? err.message : String(err);
+  console.error(`hive: ${message}`);
+  try {
+    ensureDirs();
+    const detail = err instanceof Error ? (err.stack ?? message) : message;
+    appendFileSync(
+      join(logsDir(), "cli-error.log"),
+      `${new Date().toISOString()} ${process.argv.slice(2).join(" ")}\n${detail}\n\n`
+    );
+  } catch {
+    // 로그도 못 남기는 상황이면 stderr 한 줄로 끝낸다.
+  }
+  process.exit(1);
+}

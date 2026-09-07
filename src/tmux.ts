@@ -10,9 +10,14 @@ export class TmuxError extends Error {
 }
 
 let socketOverride: string | undefined;
+let paneOverride: string | undefined;
 
 export function setTmuxSocketOverride(socket: string | undefined): void {
   socketOverride = socket;
+}
+
+export function setPaneOverride(paneId: string | undefined): void {
+  paneOverride = paneId;
 }
 
 function socketPath(): string | undefined {
@@ -41,8 +46,16 @@ export function insideTmux(): boolean {
   return Boolean(process.env.TMUX);
 }
 
+// tmux가 run-shell로 실행하는 명령에는 TMUX_PANE이 들어오지 않는다. -t를 줘도 마찬가지다(실측).
+// 그래서 tmux 바인딩은 --pane '#{pane_id}'로 pane을 직접 넘기고, 그것도 없으면 활성 pane을 조회한다.
 export function currentPaneId(): string | undefined {
-  return process.env.TMUX_PANE;
+  if (paneOverride) return paneOverride;
+  if (process.env.TMUX_PANE) return process.env.TMUX_PANE;
+  try {
+    return tmux(["display-message", "-p", "#{pane_id}"]).trim() || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function currentSessionName(): string | undefined {

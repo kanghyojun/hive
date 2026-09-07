@@ -1,4 +1,5 @@
 import {
+  currentPaneId,
   getSessionOption,
   listPanes,
   paneExists,
@@ -15,10 +16,16 @@ export const SIDEBAR_WIDTH = 34;
 const SIDEBAR_PANE_OPTION = "@hive_sidebar_pane";
 const SIDEBAR_HOOK_INDEX = "session-window-changed[77]";
 
-function currentPane() {
-  const paneId = process.env.TMUX_PANE;
-  if (!paneId) return undefined;
-  return listPanes().find((p) => p.paneId === paneId);
+function requireCurrentPane() {
+  const paneId = currentPaneId();
+  if (!paneId) {
+    throw new Error("tmux 안에서만 실행할 수 있습니다. tmux 바인딩이면 --pane '#{pane_id}'를 넘기세요.");
+  }
+  const pane = listPanes().find((p) => p.paneId === paneId);
+  if (!pane) {
+    throw new Error(`pane ${paneId}을 tmux 서버에서 찾을 수 없습니다. 소켓이 맞는지 확인하세요.`);
+  }
+  return pane;
 }
 
 // hook 안에서 join-pane을 직접 쓰면 동작하지 않아(실측) run-shell로 tmux 클라이언트를 다시 부른다.
@@ -45,15 +52,12 @@ export function attachSidebar(sessionName: string, windowId: string): void {
 }
 
 export function showSidebar(): void {
-  const pane = currentPane();
-  if (!pane) throw new Error("tmux 안에서만 실행할 수 있습니다 (TMUX_PANE 없음)");
+  const pane = requireCurrentPane();
   attachSidebar(pane.sessionName, pane.windowId);
 }
 
 export function hideSidebar(): void {
-  const pane = currentPane();
-  if (!pane) throw new Error("tmux 안에서만 실행할 수 있습니다 (TMUX_PANE 없음)");
-  hideSidebarForSession(pane.sessionName);
+  hideSidebarForSession(requireCurrentPane().sessionName);
 }
 
 function hideSidebarForSession(sessionName: string): void {
@@ -70,8 +74,7 @@ function hideSidebarForSession(sessionName: string): void {
 }
 
 export function toggleSidebar(): void {
-  const pane = currentPane();
-  if (!pane) throw new Error("tmux 안에서만 실행할 수 있습니다 (TMUX_PANE 없음)");
+  const pane = requireCurrentPane();
   if (hasSidebar(pane.sessionName)) {
     hideSidebarForSession(pane.sessionName);
   } else {
@@ -81,8 +84,12 @@ export function toggleSidebar(): void {
 
 // TUI(q 키 등)가 스스로 종료할 때 자신이 속한 세션의 hook/옵션만 정리한다.
 export function cleanupFromTui(): void {
-  const pane = currentPane();
-  if (!pane) return;
-  unsetSessionHook(pane.sessionName, SIDEBAR_HOOK_INDEX);
-  unsetSessionOption(pane.sessionName, SIDEBAR_PANE_OPTION);
+  let sessionName: string;
+  try {
+    sessionName = requireCurrentPane().sessionName;
+  } catch {
+    return;
+  }
+  unsetSessionHook(sessionName, SIDEBAR_HOOK_INDEX);
+  unsetSessionOption(sessionName, SIDEBAR_PANE_OPTION);
 }
