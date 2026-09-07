@@ -24,6 +24,7 @@ export interface Db {
   getOffset(spoolFile: string): number;
   setOffset(spoolFile: string, offset: number): void;
   insertEvent(row: EventRow): number;
+  deleteEventsForFile(spoolFile: string): void;
   getAgent(tmuxPid: string, paneId: string): AgentRecord | undefined;
   upsertAgent(rec: AgentRecord): void;
   listAgents(tmuxPid?: string): AgentRecord[];
@@ -92,6 +93,7 @@ export async function openDb(path: string): Promise<Db> {
       `INSERT OR IGNORE INTO events(spool_file, spool_offset, ts, tmux_pid, pane_id, session_id, event, tool_name, payload)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ),
+    deleteEventsForFile: raw.prepare("DELETE FROM events WHERE spool_file = ?"),
     getAgent: raw.prepare("SELECT * FROM agents WHERE tmux_pid = ? AND pane_id = ?"),
     upsertAgent: raw.prepare(
       `INSERT INTO agents(tmux_pid, pane_id, state, source, tool_name, prompt, last_event, last_ts, last_prompt_ts, subagents, ended)
@@ -148,6 +150,9 @@ export async function openDb(path: string): Promise<Db> {
         row.payload
       );
       return Number(result.changes);
+    },
+    deleteEventsForFile(spoolFile) {
+      stmts.deleteEventsForFile.run(spoolFile);
     },
     getAgent(tmuxPid, paneId) {
       const row = stmts.getAgent.get(tmuxPid, paneId) as Record<string, unknown> | undefined;

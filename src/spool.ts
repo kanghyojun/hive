@@ -86,17 +86,28 @@ export function ingestAll(db: Db, spoolDir: string, reducer: Reducer = reduceAge
       continue;
     }
 
-    let offset = db.getOffset(file);
+    const storedOffset = db.getOffset(file);
+    let offset = storedOffset;
     if (offset > size) offset = 0; // hook이 5MB 초과로 truncate한 경우
 
     if (offset >= size) continue;
 
     const fileBuf = readFileSync(full);
+    // truncate 뒤 옛 offset을 넘길 만큼 다시 쌓이면 크기 비교로는 못 잡는다.
+    // 이어 읽기가 성립하면 직전 바이트가 개행이므로, 아니면 옛 파일 기준 offset으로 보고 되돌린다.
+    if (offset > 0 && fileBuf[offset - 1] !== 0x0a) offset = 0;
+
     const chunk = fileBuf.subarray(offset).toString("utf8");
     const { lines, nextOffset } = splitCompleteLines(chunk, offset);
     if (lines.length === 0) continue;
 
+    const rewound = offset < storedOffset;
+
     db.transaction(() => {
+      // offset을 되돌렸으면 옛 파일의 (spool_file, spool_offset) 행이 그대로 남아 있어
+      // INSERT OR IGNORE가 새 이벤트를 조용히 버리고 상태가 truncate 시점에 얼어붙는다.
+      if (rewound) db.deleteEventsForFile(file);
+
       for (const { offset: lineOffset, text } of lines) {
         const rec = parseSpoolLine(text);
         if (!rec) {
