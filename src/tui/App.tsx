@@ -386,8 +386,10 @@ export function App(): React.JSX.Element {
       try {
         const here = currentSessionName();
         const killIds = new Set(plan.windows.map((w) => w.windowId));
+        // pane 목록은 여기서 한 번만 찍어 wtRemove까지 같은 스냅샷으로 판정한다.
+        const panes = listPanes();
         // 세션 이름이 아니라 창 단위로 본다. 대상 창을 죽여도 다른 창이 남는 세션은 살아남는다.
-        const alive = sessionsAfterKill(listPanes(), killIds);
+        const alive = sessionsAfterKill(panes, killIds);
         let moveTo: string | undefined;
         if (here && !alive.has(here)) {
           const other = [...alive][0];
@@ -404,6 +406,7 @@ export function App(): React.JSX.Element {
           force,
           currentWindowId: currentWindowId ?? undefined,
           beforeKill: moveTo ? () => switchClient(moveTo) : undefined,
+          panes,
         });
         const suffix = result.skippedReason ? ` — ${result.skippedReason}` : "";
         setStatusMsg(`removed: ${basename(result.path)} (창 ${result.killedWindows}개)${suffix}`);

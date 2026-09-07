@@ -5,7 +5,7 @@ process.on("warning", (w) => {
   if (w.name !== "ExperimentalWarning") console.error(w);
 });
 
-import { appendFileSync } from "node:fs";
+import { appendFileSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { Command } from "commander";
 import React from "react";
@@ -22,11 +22,30 @@ import {
   setHiveHomeOverride,
   spoolDir,
 } from "./paths.js";
-import { setPaneOverride, setTmuxSocketOverride, listPanes, serverInfo } from "./tmux.js";
+import {
+  setPaneOverride,
+  setTmuxSocketOverride,
+  currentPaneId,
+  listPanes,
+  serverInfo,
+  switchClient,
+} from "./tmux.js";
 import { hideSidebar, showSidebar, toggleSidebar, cleanupFromTui } from "./sidebar.js";
 import { AGENT_KINDS, installHooks, statusHooks, uninstallHooks, type AgentKind } from "./hookInstall.js";
-import { createInitScript, listWorktrees, wtNew, wtRunInit } from "./worktree.js";
+import {
+  createInitScript,
+  listWorktrees,
+  planWtRemove,
+  sessionsAfterKill,
+  windowsInWorktree,
+  wtNew,
+  wtOpen,
+  wtRemove,
+  wtRunInit,
+} from "./worktree.js";
 import { resolveRepo } from "./git.js";
+import { abConfigPath, abLocalInstalled, parseAbConfig, probeAbBridge } from "./abBridge.js";
+import { claudeSnapshotPath, readClaudeUsage, readCodexUsage } from "./usage.js";
 import { openDb } from "./db.js";
 import { ingestAll } from "./spool.js";
 import { effectiveState, reduceAgent } from "./state.js";
@@ -180,11 +199,91 @@ wt
     console.log(JSON.stringify(result, null, 2));
   });
 wt
+  .command("open <target>")
+  .description("이미 있는 worktree를 세션으로 열기 (branch, 경로, 디렉토리 이름 중 아무거나)")
+  .option("--repo <path>", "저장소 경로 (기본: 현재 디렉토리)")
+  .option("--init", "init script도 실행")
+  .action((target, opts) => {
+    const result = wtOpen({ repo: opts.repo, target, init: opts.init });
+    console.log(JSON.stringify(result, null, 2));
+  });
+wt
+  .command("rm <target>")
+  .alias("remove")
+  .description("worktree 삭제 + 그 worktree를 쓰던 tmux 창 종료")
+  .option("--repo <path>", "저장소 경로 (기본: 현재 디렉토리)")
+  .option("--force", "커밋 안 된 변경이 있어도 지우기")
+  .action((target, opts) => {
+    // pane 목록은 한 번만 찍는다. 여러 번 찍으면 계획과 판정이 서로 다른 스냅샷 위에서 돈다.
+    const panes = listPanes();
+    const plan = planWtRemove({ repo: opts.repo, target, panes });
+    const paneId = currentPaneId();
+    const self = paneId ? panes.find((p) => p.paneId === paneId) : undefined;
+
+    // TUI의 D와 같은 처리. 자기 세션이 통째로 사라지면 detach-on-destroy 때문에
+    // 클라이언트가 떨어진다. 창을 죽이기 직전에만 다른 세션으로 옮긴다.
+    const alive = sessionsAfterKill(panes, new Set(plan.windows.map((w) => w.windowId)));
+    let beforeKill: (() => void) | undefined;
+    if (self && !alive.has(self.sessionName)) {
+      const other = [...alive][0];
+      if (!other) {
+        throw new Error("마지막 창이라 지울 수 없습니다. 다른 세션을 먼저 여세요");
+      }
+      beforeKill = () => switchClient(other);
+    }
+
+    const result = wtRemove(plan, {
+      force: !!opts.force,
+      currentWindowId: self?.windowId,
+      beforeKill,
+      panes,
+    });
+    console.log(JSON.stringify({ ...result, changes: plan.changes }, null, 2));
+  });
+wt
   .command("list")
   .option("--repo <path>", "저장소 경로 (기본: 현재 디렉토리)")
   .action((opts) => {
     const repoRoot = resolveRepoRoot(opts.repo);
-    console.log(JSON.stringify(listWorktrees(repoRoot), null, 2));
+    let panes: ReturnType<typeof listPanes> = [];
+    try {
+      panes = listPanes();
+    } catch {
+      panes = [];
+    }
+    const entries = listWorktrees(repoRoot).map((e) => ({ ...e, windows: windowsInWorktree(panes, e.path) }));
+    console.log(JSON.stringify(entries, null, 2));
+  });
+
+const ab = program.command("ab").description("맥 브라우저 브리지(ab-bridge) 상태");
+ab
+  .command("status")
+  .description("tailscale IP + CDP /json/version으로 브리지 연결 확인")
+  .action(async () => {
+    let raw: string | undefined;
+    try {
+      raw = readFileSync(abConfigPath(), "utf8");
+    } catch {
+      // 설정 파일이 없으면 ab-bridge와 같은 기본값으로 돈다.
+    }
+    const cfg = parseAbConfig(raw);
+    const { status, ip } = await probeAbBridge(cfg);
+    console.log(
+      JSON.stringify({ installed: abLocalInstalled(), macHost: cfg.macHost, port: cfg.port, ip, status }, null, 2)
+    );
+  });
+
+program
+  .command("usage")
+  .description("claude/codex 창 사용률 원본 출력 (TUI 없이 데이터 경로 점검용)")
+  .action(() => {
+    console.log(
+      JSON.stringify(
+        { claude: readClaudeUsage(), codex: readCodexUsage(), claudeSnapshotPath: claudeSnapshotPath() },
+        null,
+        2
+      )
+    );
   });
 
 program

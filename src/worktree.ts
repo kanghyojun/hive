@@ -256,7 +256,7 @@ export interface WtRemoveResult {
 // git을 먼저 부른다. git이 거부하면 tmux는 아무것도 안 건드린 상태로 남는다.
 export function wtRemove(
   plan: WtRemovePlan,
-  opts: { force: boolean; currentWindowId?: string; beforeKill?: () => void }
+  opts: { force: boolean; currentWindowId?: string; beforeKill?: () => void; panes?: PaneInfo[] }
 ): WtRemoveResult {
   if (plan.changes > 0 && !opts.force) {
     throw new Error(`커밋 안 된 변경이 ${plan.changes}개 있습니다. --force로 지우세요`);
@@ -269,7 +269,7 @@ export function wtRemove(
   // 마지막 세션이 사라지면 tmux 서버까지 내려간다(실측). 남는 세션이 없을 때만 창을 그대로 둔다.
   // 세션 이름이 아니라 창 단위로 본다. 대상 창을 다 죽여도 다른 창이 남는 세션은 살아남는다.
   const killIds = new Set(plan.windows.map((w) => w.windowId));
-  if (sessionsAfterKill(listPanes(), killIds).size === 0) {
+  if (sessionsAfterKill(opts.panes ?? listPanes(), killIds).size === 0) {
     return { path: plan.entry.path, killedWindows: 0, skippedReason: "마지막 창이라 창은 남겼습니다" };
   }
 
