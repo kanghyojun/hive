@@ -1,5 +1,12 @@
 export type AgentState = "working" | "waiting" | "done" | "idle" | "unknown";
 
+// hive가 상태를 추적하는 에이전트 종류. 사이드바에서는 cc(claude code) / co(codex)로 줄여 쓴다.
+export type AgentKind = "claude" | "codex";
+
+export const AGENT_KINDS: AgentKind[] = ["claude", "codex"];
+
+export const AGENT_LABEL: Record<AgentKind, string> = { claude: "cc", codex: "co" };
+
 export interface AgentRecord {
   tmuxPid: string;
   paneId: string;
@@ -26,7 +33,13 @@ export interface RawEvent {
 
 const IDLE_MS = 30 * 60 * 1000;
 
-export const PERMISSION_PATTERNS = [/Do you want to proceed\?/, /Yes, and don't ask again/];
+// 앞의 둘은 Claude Code, 뒤의 둘은 codex 화면 문구다(실측).
+export const PERMISSION_PATTERNS = [
+  /Do you want to proceed\?/,
+  /Yes, and don't ask again/,
+  /Would you like to run the following command\?/,
+  /Yes, proceed \(y\)/,
+];
 
 export function looksLikePermissionPrompt(text: string): boolean {
   return PERMISSION_PATTERNS.some((re) => re.test(text));
@@ -173,6 +186,14 @@ export function reduceAgent(prev: AgentRecord | undefined, ev: RawEvent): AgentR
     case "SessionEnd":
       next.ended = 1;
       break;
+
+    // codex 전용. 사용자가 턴을 끊은 것이라 진행 중이던 도구가 있어도 에이전트는 멈춘다.
+    case "Interrupt":
+      next.state = "done";
+      next.source = "hook";
+      next.toolName = null;
+      next.subagents = "{}";
+      return next;
 
     case "SubagentStart": {
       const agentId = typeof payload.agent_id === "string" ? payload.agent_id : null;

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildRows, type Row } from "./model.js";
+import { buildRows, resolvePaneAgents, type Row } from "./model.js";
 import type { AgentRecord } from "./state.js";
 import type { PaneInfo } from "./tmux.js";
 import type { RepoInfo } from "./git.js";
@@ -444,5 +444,57 @@ describe("buildRows agent 없는 pane 처리", () => {
       })
     );
     expect(rows[0].state).toBe("unknown");
+  });
+});
+
+describe("resolvePaneAgents", () => {
+  const proc = (pid: string, ppid: string, comm: string) => ({ pid, ppid, comm });
+
+  it("pane 명령이 그대로 agent면 바로 잡는다", () => {
+    const agents = resolvePaneAgents([pane({ paneId: "%1", paneCurrentCommand: "claude", panePid: "10" })], []);
+    expect(agents.get("%1")).toBe("claude");
+  });
+
+  it("npm 래퍼(node) 아래에 있는 codex를 찾아낸다", () => {
+    // 실측: pane(zsh) -> node(codex.js) -> codex
+    const panes = [pane({ paneId: "%1", paneCurrentCommand: "node", panePid: "10" })];
+    const procs = [proc("11", "10", "node"), proc("12", "11", "codex")];
+    expect(resolvePaneAgents(panes, procs).get("%1")).toBe("codex");
+  });
+
+  it("agent가 없는 셸 pane은 비워 둔다", () => {
+    const panes = [pane({ paneId: "%1", paneCurrentCommand: "zsh", panePid: "10" })];
+    const procs = [proc("11", "10", "vim")];
+    expect(resolvePaneAgents(panes, procs).has("%1")).toBe(false);
+  });
+
+  it("claude가 codex를 자식으로 돌려도 그 pane은 claude로 본다", () => {
+    const panes = [pane({ paneId: "%1", paneCurrentCommand: "zsh", panePid: "10" })];
+    const procs = [proc("11", "10", "claude"), proc("12", "11", "codex")];
+    expect(resolvePaneAgents(panes, procs).get("%1")).toBe("claude");
+  });
+});
+
+describe("codex pane", () => {
+  const rowsFor = (paneCurrentCommand: string, agentByPane?: Map<string, "claude" | "codex">) =>
+    buildRows({
+      panes: [pane({ paneId: "%1", windowId: "@1", paneCurrentCommand })],
+      agents: [],
+      repoByCwd: new Map(),
+      sleepMap: new Map(),
+      agentByPane,
+      now: 1000,
+      mode: "recent",
+      tmuxPid: TMUX_PID,
+    });
+
+  it("hook 이벤트가 없어도 codex가 떠 있으면 agent로 잡는다", () => {
+    const rows = windowRows(rowsFor("codex", new Map([["%1", "codex" as const]])));
+    expect(rows[0].state).toBe("unknown");
+    expect(rows[0].agent).toBe("codex");
+  });
+
+  it("agent가 아닌 셸 pane뿐인 window는 목록에서 뺀다", () => {
+    expect(windowRows(rowsFor("zsh"))).toHaveLength(0);
   });
 });

@@ -2,8 +2,8 @@ import { chmodSync, createWriteStream, existsSync, mkdirSync, writeFileSync } fr
 import { basename, join, resolve } from "node:path";
 import { spawn } from "node:child_process";
 import { listWorktrees, resolveRepo, worktreeAdd, worktreeBasePath } from "./git.js";
-import { currentSessionName, insideTmux, newWindow } from "./tmux.js";
-import { attachSidebar, hasSidebar } from "./sidebar.js";
+import { insideTmux, newSession, sanitizeSessionName, sessionExists, switchClient } from "./tmux.js";
+import { attachSidebar } from "./sidebar.js";
 import { ensureDirs, logsDir, selfCommand } from "./paths.js";
 
 export { listWorktrees };
@@ -52,7 +52,20 @@ export interface WtNewOptions {
 
 export interface WtNewResult {
   path: string;
+  sessionName?: string;
   windowId?: string;
+  switched?: boolean;
+}
+
+// 이름이 겹치면 tmux가 new-session을 거부하므로 -2, -3을 붙여 비어 있는 이름을 찾는다.
+export function uniqueSessionName(base: string, exists: (name: string) => boolean = sessionExists): string {
+  const clean = sanitizeSessionName(base);
+  if (!exists(clean)) return clean;
+  for (let i = 2; i < 1000; i++) {
+    const candidate = `${clean}-${i}`;
+    if (!exists(candidate)) return candidate;
+  }
+  throw new Error(`세션 이름을 정할 수 없습니다: ${clean}`);
 }
 
 export function wtNew(opts: WtNewOptions): WtNewResult {
@@ -76,14 +89,25 @@ export function wtNew(opts: WtNewOptions): WtNewResult {
   const [node, cli] = selfCommand();
   const runInitArgs = script ? `${shQuote(path)} ${shQuote(script)}` : shQuote(path);
   const windowCommand = `${shQuote(node)} ${shQuote(cli)} wt run-init ${runInitArgs}; exec \${SHELL:-sh}`;
-  const windowId = newWindow({ name: safeBranch, cwd: path, command: windowCommand });
+  // worktree 하나가 세션 하나다. 같은 세션에 window로 붙이면 브랜치를 오갈 때마다 window 목록이 섞인다.
+  const { sessionName, windowId } = newSession({
+    name: uniqueSessionName(safeBranch),
+    cwd: path,
+    command: windowCommand,
+  });
 
-  const sessionName = currentSessionName();
-  if (sessionName && !hasSidebar(sessionName)) {
-    attachSidebar(sessionName, windowId);
+  attachSidebar(sessionName, windowId);
+
+  // run-shell처럼 붙어 있는 클라이언트가 없는 자리에서 부르면 switch-client가 실패한다.
+  // 세션은 이미 만들어졌으니 이동 실패는 결과로만 알리고 넘어간다.
+  let switched = true;
+  try {
+    switchClient(sessionName);
+  } catch {
+    switched = false;
   }
 
-  return { path, windowId };
+  return { path, sessionName, windowId, switched };
 }
 
 // `hive wt run-init <path> [<script>]`의 구현체. 새로 연 tmux window 안에서 직접 실행된다.

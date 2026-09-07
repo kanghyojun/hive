@@ -1,10 +1,10 @@
 # hive
 
-tmux 위에서 여러 window의 AI agent(Claude Code) 상태를 한눈에 보는 쓰레드뷰 프로토타입입니다.
+tmux 위에서 여러 window의 AI agent(Claude Code, Codex) 상태를 한눈에 보는 쓰레드뷰 프로토타입입니다.
 
 ## 쓰레드뷰란
 
-hive에서 tmux window 하나가 스레드 하나입니다. 사이드바의 한 행은 window 하나를 나타내며, 그 window 안 pane에서 Claude Code가 지금 뭘 하고 있는지를 보여줍니다. window 안에 pane이 여러 개면 그 중 가장 급한 상태를 대표로 보여줍니다(waiting이 working보다 우선, working이 idle보다 우선하는 식).
+hive에서 tmux window 하나가 스레드 하나입니다. 사이드바의 한 행은 window 하나를 나타내며, 그 window 안 pane에서 에이전트가 지금 뭘 하고 있는지를 보여줍니다. 행 맨 앞의 `cc`는 Claude Code, `co`는 Codex입니다. window 안에 pane이 여러 개면 그 중 가장 급한 상태를 대표로 보여줍니다(waiting이 working보다 우선, working이 idle보다 우선하는 식).
 
 상태는 5가지입니다.
 
@@ -12,7 +12,7 @@ hive에서 tmux window 하나가 스레드 하나입니다. 사이드바의 한 
 - `waiting`(?, 노랑): `PermissionRequest`, `Notification`(권한/확인 대화상자), 또는 `AskUserQuestion` 같은 대화형 tool의 `PreToolUse`가 오면. 화면에 권한 승인 문구가 보이는데 hook 이벤트가 안 온 경우에도(3초마다 화면을 확인) waiting으로 표시합니다.
 - `done`(✓): `Stop`이 오면. 단 서브에이전트가 아직 working으로 남아 있으면 working을 유지합니다.
 - `idle`(·): `SessionEnd`가 오거나, 마지막 이벤트로부터 30분이 지나면.
-- `unknown`(◌): hook 이벤트가 하나도 없는데 pane에 `claude`가 떠 있으면.
+- `unknown`(◌): hook 이벤트가 하나도 없는데 pane에 에이전트가 떠 있으면.
 
 sleep(`s` 키)은 표시 전용입니다. 이벤트 흡수와 상태 계산은 계속하지만 화면에서는 어둡게(dimColor) 표시하고 목록 맨 아래로 내립니다.
 
@@ -28,16 +28,28 @@ pnpm build
 node dist/cli.js paths   # 아래 tmux 스니펫에 채울 절대경로 확인
 ```
 
-`hive hook install`은 **사용자가 직접** 실행합니다(구현 스크립트가 실제 `~/.claude/settings.json`을 건드리지 않습니다).
+`hive hook install`은 **사용자가 직접** 실행합니다(구현 스크립트가 실제 설정 파일을 건드리지 않습니다).
 
 ```
-hive hook install                 # 기본 경로: ${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json
-hive hook install --settings <path>   # 다른 경로에 설치(테스트용)
-hive hook status                  # 14개 이벤트 설치 여부 확인
-hive hook uninstall                # 우리 hook만 제거, 다른 hook은 그대로 둠
+hive hook install                      # claude와 codex 양쪽에 설치
+hive hook install --agent codex        # 한쪽만
+hive hook install --settings <path>          # Claude 쪽 다른 경로에 설치(테스트용)
+hive hook install --codex-hooks <path>       # Codex 쪽 다른 경로에 설치(테스트용)
+hive hook status                       # 에이전트별 이벤트 설치 여부 확인
+hive hook uninstall                    # 우리 hook만 제거, 다른 hook은 그대로 둠
 ```
 
-install은 쓰기 전에 같은 디렉토리에 `settings.json.hive-backup-<ISO시각>` 백업을 남기고, 이미 등록된 hook(같은 command)은 건너뜁니다(멱등). 설정 변경은 문서상 Claude Code가 자동으로 reload하지만, 확실히 하려면 새 세션을 하나 띄워 확인하세요.
+설치 위치는 Claude Code가 `${CLAUDE_CONFIG_DIR:-$HOME/.claude}/settings.json`, Codex가 `${CODEX_HOME:-$HOME/.codex}/hooks.json`입니다. install은 쓰기 전에 같은 디렉토리에 `<파일>.hive-backup-<ISO시각>` 백업을 남기고, 이미 등록된 hook(같은 command)은 건너뜁니다(멱등). 설정 변경은 문서상 Claude Code가 자동으로 reload하지만, 확실히 하려면 새 세션을 하나 띄워 확인하세요.
+
+### Codex는 신뢰 승인이 한 번 더 필요합니다
+
+Codex는 `hooks.json`에 적힌 hook을 그냥 실행하지 않습니다. hook이 새로 생기거나 바뀌면 codex를 띄울 때 "Hooks need review"를 묻고, 여기서 승인해야(`Trust all and continue` 또는 `Review hooks`) 실제로 돕니다. 승인 결과는 `config.toml`의 `[hooks.state."<hooks.json 경로>:<이벤트>:<그룹>:<항목>"]`에 `enabled = true`로 남습니다.
+
+```
+hive hook status --agent codex   # installed 옆 trusted/untrusted 열이 승인 여부
+```
+
+`untrusted`로 남아 있으면 hook이 등록만 되고 이벤트는 오지 않는 상태입니다. codex를 한 번 새로 띄워 승인하세요. hook 스크립트 경로가 바뀌면 승인도 다시 받아야 합니다.
 
 ## tmux 설정
 
@@ -66,7 +78,7 @@ bind W command-prompt -p "branch:" "run-shell -b \"<node> <cli.js> --pane '#{pan
 - `Enter`: 선택한 window로 이동 (사이드바는 그 window를 따라옵니다)
 - `s`: 선택한 window sleep 토글
 - `g`: `recent`/`group` 보기 전환
-- `n`: branch 이름 입력 후 그 저장소에 `wt new` 실행
+- `n`: branch 이름 입력 후 그 저장소에 `wt new` 실행 (새 세션이 열리고 그리로 이동합니다)
 - `r`: 강제 새로고침
 - `q`: 종료 (hook/옵션 정리 후 pane이 닫힙니다)
 
@@ -79,7 +91,11 @@ hive wt init-script [--repo <path>] [--force]   # <repo>/.hive/init.sh 템플릿
 hive wt new <branch> [--repo <path>] [--base <ref>] [--no-init]
 ```
 
-`wt new`는 `HIVE_WORKTREE_BASE` 아래에 git worktree를 만들고, init script(`HIVE_INIT_SCRIPT` env > `<repo>/.hive/init.sh` 순으로 찾음)를 실행한 뒤, tmux window를 하나 엽니다(왼쪽 쓰레드뷰, 오른쪽 init 로그 → 셸). init script 실행 로그는 `~/.hive/logs/wt-<branch>.log`에 남습니다. init script가 실패해도 worktree와 window는 그대로 유지되고 exit code만 알립니다.
+`wt new`는 `HIVE_WORKTREE_BASE` 아래에 git worktree를 만들고, init script(`HIVE_INIT_SCRIPT` env > `<repo>/.hive/init.sh` 순으로 찾음)를 실행한 뒤, **tmux 세션을 하나 새로 엽니다**(왼쪽 쓰레드뷰, 오른쪽 init 로그 → 셸). worktree 하나가 세션 하나입니다. 세션 이름은 브랜치명이고(`/`, `.`, `:`, 공백은 `-`로 바꿉니다), 같은 이름이 이미 있으면 `-2`, `-3`을 붙입니다. 세션을 만든 뒤에는 붙어 있는 클라이언트를 그 세션으로 옮깁니다(`switched: false`면 옮길 클라이언트가 없었다는 뜻이고, 세션은 그대로 만들어져 있습니다).
+
+세션을 새로 여는 건 `wt new`뿐입니다. 같은 세션 안에 손으로 window를 열어 다른 worktree에서 작업해도 사이드바는 그대로 잡습니다. 목록은 세션이 아니라 window 단위입니다.
+
+init script 실행 로그는 `~/.hive/logs/wt-<branch>.log`에 남습니다. init script가 실패해도 worktree와 세션은 그대로 유지되고 exit code만 알립니다.
 
 ## 환경변수
 
@@ -93,5 +109,6 @@ hive wt new <branch> [--repo <path>] [--base <ref>] [--no-init]
 
 - 마우스 클릭 좌표가 pane 기준인지는 사람이 실제로 클릭해서 확인해야 합니다(자동 검증 범위 밖).
 - 다른 tmux 세션의 window로는 목록에 보이되 dim 처리되고, 이동 시 `switch-client`를 시도합니다만 이 경로는 실사용에서 충분히 검증되지 않았습니다.
+- codex를 npm 래퍼로 설치하면 `#{pane_current_command}`가 `node`로 나옵니다(실측). 그래서 3초마다 `ps`로 pane 하위 프로세스를 훑어 `claude`/`codex`를 찾습니다. 한 pane에서 claude가 codex를 자식으로 돌리면 얕은 쪽인 claude로 표시됩니다.
 - 사이드바 폭은 34칸으로 고정입니다(`join-pane -l 34`). pane 크기를 수동으로 바꿔도 다음 window 이동에서 34로 돌아옵니다.
-- codex 감지, transcript tail, OSC 타이틀 파싱, 알림, 원격 접근, 멀티 머신 동기화, 테마, CI, 배포는 이번 프로토타입 범위 밖입니다.
+- transcript tail, OSC 타이틀 파싱, 알림, 원격 접근, 멀티 머신 동기화, 테마, CI, 배포는 이번 프로토타입 범위 밖입니다.

@@ -162,6 +162,34 @@ export function paneExists(paneId: string): boolean {
   return listPanes().some((p) => p.paneId === paneId);
 }
 
+export interface ProcInfo {
+  pid: string;
+  ppid: string;
+  comm: string;
+}
+
+// codex는 npm 래퍼(node)가 실제 바이너리를 자식으로 띄워서 #{pane_current_command}가 node로 나온다(실측).
+// pane 하나씩 ps를 부르면 tick마다 pane 수만큼 프로세스를 띄우게 되므로 전체 목록을 한 번에 받는다.
+export function listProcesses(): ProcInfo[] {
+  let out: string;
+  try {
+    out = execFileSync("ps", ["-eo", "pid=,ppid=,comm="], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    });
+  } catch {
+    return [];
+  }
+  const procs: ProcInfo[] = [];
+  for (const line of out.split("\n")) {
+    const parts = line.trim().split(/\s+/);
+    if (parts.length < 3) continue;
+    const [pid, ppid, ...rest] = parts;
+    procs.push({ pid, ppid, comm: rest.join(" ") });
+  }
+  return procs;
+}
+
 export function selectWindow(windowId: string): void {
   tmux(["select-window", "-t", windowId]);
 }
@@ -180,6 +208,47 @@ export function capturePaneTail(paneId: string, lines: number): string {
 
 export function newWindow(opts: { name: string; cwd: string; command: string }): string {
   return tmux(["new-window", "-P", "-F", "#{window_id}", "-n", opts.name, "-c", opts.cwd, opts.command]).trim();
+}
+
+// tmux는 세션 이름에서 ., : 를 특별 취급한다(: 는 target 구분자, . 는 pane 구분자).
+// 그대로 넘기면 이후 -t <name> 조회가 엉뚱한 대상을 가리키므로 여기서 -로 바꾼다.
+export function sanitizeSessionName(name: string): string {
+  return name.replaceAll(/[.:\s]/g, "-").replace(/^-+|-+$/g, "") || "hive";
+}
+
+export function sessionExists(name: string): boolean {
+  try {
+    // =을 붙여야 prefix 매칭이 아니라 정확히 같은 이름만 찾는다.
+    tmux(["has-session", "-t", `=${name}`]);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+export interface NewSessionResult {
+  sessionName: string;
+  windowId: string;
+}
+
+export function newSession(opts: { name: string; cwd: string; command: string }): NewSessionResult {
+  const out = tmux([
+    "new-session",
+    "-d",
+    "-P",
+    "-F",
+    "#{session_name}\t#{window_id}",
+    "-s",
+    opts.name,
+    // 세션 이름만 주면 첫 window 이름이 실행 명령(zsh)이 되어 사이드바에 브랜치가 안 보인다.
+    "-n",
+    opts.name,
+    "-c",
+    opts.cwd,
+    opts.command,
+  ]).trim();
+  const [sessionName, windowId] = out.split("\t");
+  return { sessionName, windowId };
 }
 
 export function splitLeft(opts: { target: string; width: number; command: string }): string {
