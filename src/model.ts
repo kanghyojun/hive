@@ -53,12 +53,26 @@ interface WindowAgg {
   windowIndex: string;
   name: string;
   cwd: string;
+  cwdRank: number;
   active: boolean;
   windowActivity: number;
+  tracked: boolean;
   state: AgentState;
   source: string;
   prompt: string | null;
   lastPromptTs: number | null;
+}
+
+// 사이드바 자신과 일반 셸 pane은 agent가 아니다. 이런 pane까지 상태를 매기면 unknown이 되고,
+// unknown은 done/idle보다 급한 상태라 claude가 끝난 window를 ◌로 덮어쓴다.
+// 사이드바는 join-pane -hb로 항상 pane_index 0이라 window의 첫 pane이기도 하다(실측).
+function isAgentPane(pane: PaneInfo, agent: AgentRecord | undefined): boolean {
+  return agent !== undefined || pane.paneCurrentCommand === "claude";
+}
+
+// window를 대표할 cwd는 agent pane을, 그중에서도 활성 pane을 우선한다.
+function cwdRank(pane: PaneInfo, agentPane: boolean): number {
+  return (agentPane ? 2 : 0) + (pane.paneActive ? 1 : 0);
 }
 
 export function buildRows(input: BuildRowsInput): Row[] {
@@ -71,8 +85,13 @@ export function buildRows(input: BuildRowsInput): Row[] {
   for (const pane of input.panes) {
     const agent = agentByPane.get(pane.paneId);
     const screenWaiting = input.screenWaitingPanes?.has(pane.paneId) ?? false;
-    const { state, source } = effectiveState(agent, input.now, screenWaiting);
+    const tracked = isAgentPane(pane, agent);
+    // agent가 없는 pane은 상태 집계에서 빼되 window 자체는 목록에 남긴다(idle = agent 없음).
+    const { state, source } = tracked
+      ? effectiveState(agent, input.now, screenWaiting)
+      : { state: "idle" as AgentState, source: "" };
     const promptTs = agent?.lastPromptTs ?? null;
+    const rank = cwdRank(pane, tracked);
 
     const existing = windows.get(pane.windowId);
     if (!existing) {
@@ -82,8 +101,10 @@ export function buildRows(input: BuildRowsInput): Row[] {
         windowIndex: pane.windowIndex,
         name: pane.windowName,
         cwd: pane.paneCurrentPath,
+        cwdRank: rank,
         active: pane.windowActive,
         windowActivity: pane.windowActivity,
+        tracked,
         state,
         source,
         prompt: agent?.prompt ?? null,
@@ -96,8 +117,13 @@ export function buildRows(input: BuildRowsInput): Row[] {
     if (promptTs != null) {
       existing.lastPromptTs = existing.lastPromptTs == null ? promptTs : Math.max(existing.lastPromptTs, promptTs);
     }
-    // 창 상태는 그 안의 pane들 중 가장 급한 상태(waiting > working > unknown > done > idle)를 대표로 쓴다.
-    if (STATE_PRIORITY[state] < STATE_PRIORITY[existing.state]) {
+    if (rank > existing.cwdRank) {
+      existing.cwd = pane.paneCurrentPath;
+      existing.cwdRank = rank;
+    }
+    // 창 상태는 그 안의 agent pane들 중 가장 급한 상태(waiting > working > unknown > done > idle)를 대표로 쓴다.
+    if (tracked && (!existing.tracked || STATE_PRIORITY[state] < STATE_PRIORITY[existing.state])) {
+      existing.tracked = true;
       existing.state = state;
       existing.source = source;
       existing.prompt = agent?.prompt ?? null;

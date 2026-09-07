@@ -196,3 +196,80 @@ describe("buildRows group 모드", () => {
     expect(groupNames).toEqual(["repo-b", "repo-a"]);
   });
 });
+
+describe("buildRows agent 없는 pane 처리", () => {
+  // 사이드바(node)는 join-pane -hb로 항상 window의 첫 pane이 된다.
+  const sidebar = (windowId: string, paneId: string) =>
+    pane({
+      windowId,
+      paneId,
+      paneCurrentCommand: "node",
+      paneCurrentPath: "/home/me",
+      paneActive: false,
+    });
+
+  it("사이드바 pane이 claude의 done 상태를 unknown으로 덮어쓰지 않는다", () => {
+    const rows = windowRows(
+      buildRows({
+        panes: [sidebar("@1", "%0"), pane({ windowId: "@1", paneId: "%1" })],
+        agents: [agent({ paneId: "%1", state: "done", lastEvent: "Stop" })],
+        repoByCwd: new Map(),
+        sleepMap: new Map(),
+        now: 5000,
+        mode: "recent",
+        tmuxPid: TMUX_PID,
+      })
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].state).toBe("done");
+  });
+
+  it("window의 cwd를 사이드바가 아닌 claude pane에서 가져온다", () => {
+    const rows = windowRows(
+      buildRows({
+        panes: [
+          sidebar("@1", "%0"),
+          pane({ windowId: "@1", paneId: "%1", paneCurrentPath: "/repo/feature" }),
+        ],
+        agents: [agent({ paneId: "%1" })],
+        repoByCwd: new Map(),
+        sleepMap: new Map(),
+        now: 5000,
+        mode: "recent",
+        tmuxPid: TMUX_PID,
+      })
+    );
+    expect(rows[0].cwd).toBe("/repo/feature");
+  });
+
+  it("agent가 하나도 없는 window는 목록에 남되 idle로 본다", () => {
+    const rows = windowRows(
+      buildRows({
+        panes: [sidebar("@1", "%0"), pane({ windowId: "@1", paneId: "%1", paneCurrentCommand: "zsh" })],
+        agents: [],
+        repoByCwd: new Map(),
+        sleepMap: new Map(),
+        now: 5000,
+        mode: "recent",
+        tmuxPid: TMUX_PID,
+      })
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].state).toBe("idle");
+  });
+
+  it("hook 기록이 없어도 claude가 도는 pane은 unknown으로 남긴다", () => {
+    const rows = windowRows(
+      buildRows({
+        panes: [sidebar("@1", "%0"), pane({ windowId: "@1", paneId: "%1" })],
+        agents: [],
+        repoByCwd: new Map(),
+        sleepMap: new Map(),
+        now: 5000,
+        mode: "recent",
+        tmuxPid: TMUX_PID,
+      })
+    );
+    expect(rows[0].state).toBe("unknown");
+  });
+});
