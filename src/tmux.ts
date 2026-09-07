@@ -158,6 +158,10 @@ export function listPanes(): PaneInfo[] {
     });
 }
 
+export function killWindow(windowId: string): void {
+  tmux(["kill-window", "-t", windowId]);
+}
+
 export function paneExists(paneId: string): boolean {
   return listPanes().some((p) => p.paneId === paneId);
 }
