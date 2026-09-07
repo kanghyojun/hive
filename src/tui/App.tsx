@@ -3,8 +3,17 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { Box, Text, useApp, useInput, useStdin, useWindowSize } from "ink";
 import { openDb, type Db } from "../db.js";
 import { ingestAll } from "../spool.js";
-import { reduceAgent, looksLikePermissionPrompt, AGENT_LABEL, type AgentKind, type AgentState } from "../state.js";
-import { resolveRepo, type RepoInfo } from "../git.js";
+import {
+  reduceAgent,
+  looksLikePermissionPrompt,
+  AGENT_GLYPH,
+  AGENT_GLYPH_WIDTH,
+  HIDE_GLYPH_WHEN_UNIFORM,
+  type AgentKind,
+  type AgentState,
+} from "../state.js";
+import { basename } from "node:path";
+import { listWorktrees, resolveRepo, type RepoInfo } from "../git.js";
 import { buildRows, resolvePaneAgents, type Row, type ViewMode } from "../model.js";
 import {
   capturePaneTail,
@@ -16,15 +25,42 @@ import {
   currentSessionName,
   selectPane,
   currentPaneId,
+  type PaneInfo,
 } from "../tmux.js";
 import stringWidth from "string-width";
 import { cleanupFromTui, SIDEBAR_WIDTH } from "../sidebar.js";
-import { wtNew } from "../worktree.js";
+import {
+  knownRepos,
+  planWtRemove,
+  sessionsAfterKill,
+  unopenedWorktrees,
+  wtNew,
+  wtOpen,
+  wtRemove,
+  type WtRemovePlan,
+} from "../worktree.js";
+import {
+  abConfigPath,
+  abLocalInstalled,
+  parseAbConfig,
+  probeAbBridge,
+  type AbStatus,
+} from "../abBridge.js";
+import { formatUsageLines, readClaudeUsage, readCodexUsage, type AgentUsage } from "../usage.js";
 import { dbPath, spoolDir, uiStatePath, ensureDirs } from "../paths.js";
 
 const TICK_MS = 1000;
 const SCREEN_CHECK_MS = 3000;
 const SCREEN_TAIL_LINES = 25;
+const AB_PROBE_MS = 30_000;
+const USAGE_REFRESH_MS = 30_000;
+
+/** path가 없으면 "그 저장소에 새 worktree 만들기" 항목이다. */
+interface PickerItem {
+  label: string;
+  repoRoot: string;
+  path?: string;
+}
 
 const STATE_ICON: Record<AgentState, string> = {
   working: "●",
@@ -62,6 +98,9 @@ const HELP_LINES = [
   "s      sleep 토글",
   "g      recent/group",
   "n      worktree 생성",
+  "o      worktree 열기",
+  "D      worktree 삭제",
+  "u      사용량 보기",
   "r      새로고침",
   "?      도움말 닫기",
   "Ctrl-L 화면 다시 그리기",
@@ -69,6 +108,8 @@ const HELP_LINES = [
   "",
   "▌ 청록=지금 창  회색=커서",
   "+ 는 따로 판 워크트리",
+  "✱ claude  ⬡ codex",
+  "ab●/✗ 맥 브라우저 브리지",
 ];
 
 // 폭 기준으로 잘라낸다. 한글은 한 글자가 2칸이라 length가 아니라 stringWidth로 세야 한다.
@@ -122,6 +163,15 @@ export function App(): React.JSX.Element {
   const [branchInput, setBranchInput] = useState<string | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [showHelp, setShowHelp] = useState(false);
+  const [confirm, setConfirm] = useState<{ plan: WtRemovePlan; input: string } | null>(null);
+  const [picker, setPicker] = useState<{ items: PickerItem[]; cursor: number } | null>(null);
+  const [ab, setAb] = useState<AbStatus | null>(null);
+  const [showUsage, setShowUsage] = useState(false);
+  const [usage, setUsage] = useState<AgentUsage[]>([]);
+  // picker에서 "+ 새 worktree"를 고르면 커서 행이 아니라 그 저장소에 만들어야 한다.
+  const branchRepoRef = useRef<string | null>(null);
+  // 키 핸들러에서도 pane 목록이 필요한데 tick의 panes는 지역 변수라 못 쓴다.
+  const panesRef = useRef<PaneInfo[]>([]);
   const [frame, setFrame] = useState(0);
   // Ctrl-L 강제 새로고침용. ink는 출력이 이전과 같으면 아예 쓰지 않아서,
   // 화면을 지운 뒤 다시 그리게 하려면 출력 문자열이 달라져야 한다(끝의 공백 하나로 바꾼다).
@@ -143,6 +193,7 @@ export function App(): React.JSX.Element {
       ingestAll(db, spoolDir(), reduceAgent);
 
       const panes = listPanes();
+      panesRef.current = panes;
       const server = serverInfo();
       const liveWindowIds = [...new Set(panes.map((p) => p.windowId))];
       db.pruneWindowFlags(server.startTime, liveWindowIds);
@@ -295,9 +346,11 @@ export function App(): React.JSX.Element {
   const submitBranch = useCallback(
     (branch: string) => {
       setBranchInput(null);
-      if (!branch.trim() || !actionRow) return;
+      const repo = branchRepoRef.current ?? actionRow?.repoRoot ?? actionRow?.cwd;
+      branchRepoRef.current = null;
+      if (!branch.trim() || !repo) return;
       try {
-        const result = wtNew({ branch: branch.trim(), repo: actionRow.repoRoot ?? actionRow.cwd });
+        const result = wtNew({ branch: branch.trim(), repo });
         setStatusMsg(`worktree: ${result.path}`);
       } catch (err) {
         setStatusMsg(err instanceof Error ? err.message : String(err));
@@ -305,6 +358,133 @@ export function App(): React.JSX.Element {
     },
     [actionRow]
   );
+
+  const startRemove = useCallback(() => {
+    if (!actionRow || !actionRow.repoRoot) {
+      setStatusMsg("저장소가 아닙니다");
+      return;
+    }
+    if (actionRow.worktreePath === actionRow.repoRoot) {
+      setStatusMsg("메인 저장소는 지울 수 없습니다");
+      return;
+    }
+    try {
+      const plan = planWtRemove({
+        repo: actionRow.repoRoot,
+        target: actionRow.worktreePath ?? actionRow.cwd,
+        panes: panesRef.current,
+      });
+      setConfirm({ plan, input: "" });
+    } catch (err) {
+      setStatusMsg(err instanceof Error ? err.message : String(err));
+    }
+  }, [actionRow]);
+
+  const executeRemove = useCallback(
+    (plan: WtRemovePlan, force: boolean) => {
+      setConfirm(null);
+      try {
+        const here = currentSessionName();
+        const killIds = new Set(plan.windows.map((w) => w.windowId));
+        // 세션 이름이 아니라 창 단위로 본다. 대상 창을 죽여도 다른 창이 남는 세션은 살아남는다.
+        const alive = sessionsAfterKill(listPanes(), killIds);
+        if (here && !alive.has(here)) {
+          const other = [...alive][0];
+          if (!other) {
+            setStatusMsg("마지막 창이라 지울 수 없습니다. 다른 세션을 먼저 여세요");
+            return;
+          }
+          // detach-on-destroy 기본값 때문에 자기 세션이 죽으면 클라이언트가 떨어진다. 먼저 옮긴다.
+          switchClient(other);
+        }
+        const result = wtRemove(plan, { force, currentWindowId: currentWindowId ?? undefined });
+        const suffix = result.skippedReason ? ` — ${result.skippedReason}` : "";
+        setStatusMsg(`removed: ${basename(result.path)} (창 ${result.killedWindows}개)${suffix}`);
+      } catch (err) {
+        setStatusMsg(err instanceof Error ? err.message : String(err));
+      }
+      void tick();
+    },
+    [currentWindowId, tick]
+  );
+
+  const openPicker = useCallback(() => {
+    const repos = [
+      ...new Set([
+        ...windowRows.map((r) => r.repoRoot).filter((v): v is string => Boolean(v)),
+        ...knownRepos(),
+      ]),
+    ];
+    if (repos.length === 0) {
+      setStatusMsg("아는 저장소가 없습니다");
+      return;
+    }
+    const items: PickerItem[] = [];
+    for (const repo of repos) {
+      for (const entry of unopenedWorktrees(listWorktrees(repo), panesRef.current)) {
+        items.push({
+          label: `${basename(repo)}: ${entry.branch ?? basename(entry.path)}`,
+          repoRoot: repo,
+          path: entry.path,
+        });
+      }
+      items.push({ label: `${basename(repo)}: + 새 worktree`, repoRoot: repo });
+    }
+    setPicker({ items, cursor: 0 });
+  }, [windowRows]);
+
+  const choosePicker = useCallback((item: PickerItem | undefined) => {
+    setPicker(null);
+    if (!item) return;
+    if (!item.path) {
+      branchRepoRef.current = item.repoRoot;
+      setBranchInput("");
+      return;
+    }
+    try {
+      const result = wtOpen({ repo: item.repoRoot, target: item.path, panes: panesRef.current });
+      setStatusMsg(result.alreadyOpen ? `이미 열려 있음: ${result.alreadyOpen}` : `opened: ${result.sessionName}`);
+    } catch (err) {
+      setStatusMsg(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
+  // ab-local이 없는 머신에서는 표시 자체를 하지 않는다.
+  useEffect(() => {
+    if (!abLocalInstalled()) return;
+    let raw: string | undefined;
+    try {
+      raw = readFileSync(abConfigPath(), "utf8");
+    } catch {
+      // 설정 파일이 없으면 ab-bridge 기본값으로 돈다.
+    }
+    const cfg = parseAbConfig(raw);
+    let inFlight = false;
+    const probe = () => {
+      if (inFlight) return;
+      inFlight = true;
+      probeAbBridge(cfg)
+        .then((r) => setAb(r.status))
+        .catch(() => setAb("down"))
+        .finally(() => {
+          inFlight = false;
+        });
+    };
+    probe();
+    const timer = setInterval(probe, AB_PROBE_MS);
+    return () => clearInterval(timer);
+  }, []);
+
+  // 뷰가 꺼져 있으면 파일을 전혀 읽지 않는다.
+  useEffect(() => {
+    if (!showUsage) return;
+    const refresh = () => {
+      setUsage([readClaudeUsage(), readCodexUsage()].filter((u): u is AgentUsage => u !== null));
+    };
+    refresh();
+    const timer = setInterval(refresh, USAGE_REFRESH_MS);
+    return () => clearInterval(timer);
+  }, [showUsage]);
 
   // ink는 증분 렌더를 하면서 "커서가 이전 프레임의 마지막 줄에 있다"고 가정하고 cursorUp으로
   // 거슬러 올라간다. 리사이즈로 화면이 접히거나 밀리면 그 가정이 깨져 프레임이 계속 아래에 쌓인다.
@@ -379,10 +559,39 @@ export function App(): React.JSX.Element {
   useInput((input, key) => {
     if (input.startsWith("[<")) return; // 마우스 시퀀스, 위 stdin 리스너가 처리
 
+    if (confirm !== null) {
+      if (key.escape) setConfirm(null);
+      else if (confirm.plan.changes === 0) {
+        if (input === "y") executeRemove(confirm.plan, false);
+        else setConfirm(null);
+      } else if (key.return) {
+        if (confirm.input === "yes") executeRemove(confirm.plan, true);
+        else setConfirm(null);
+      } else if (key.backspace || key.delete) {
+        setConfirm((c) => (c ? { ...c, input: c.input.slice(0, -1) } : c));
+      } else if (input) {
+        setConfirm((c) => (c ? { ...c, input: c.input + input } : c));
+      }
+      return;
+    }
+
+    if (picker !== null) {
+      const count = picker.items.length;
+      if (key.escape) setPicker(null);
+      else if (input === "j" || key.downArrow) setPicker((p) => (p ? { ...p, cursor: (p.cursor + 1) % count } : p));
+      else if (input === "k" || key.upArrow)
+        setPicker((p) => (p ? { ...p, cursor: (p.cursor - 1 + count) % count } : p));
+      else if (/^[1-9]$/.test(input)) choosePicker(picker.items[Number(input) - 1]);
+      else if (key.return) choosePicker(picker.items[picker.cursor]);
+      return;
+    }
+
     if (branchInput !== null) {
       if (key.return) submitBranch(branchInput);
-      else if (key.escape) setBranchInput(null);
-      else if (key.backspace || key.delete) setBranchInput((s) => (s ?? "").slice(0, -1));
+      else if (key.escape) {
+        branchRepoRef.current = null;
+        setBranchInput(null);
+      } else if (key.backspace || key.delete) setBranchInput((s) => (s ?? "").slice(0, -1));
       else if (input) setBranchInput((s) => (s ?? "") + input);
       return;
     }
@@ -403,6 +612,9 @@ export function App(): React.JSX.Element {
     else if (input === "g") toggleMode();
     else if (input === "r") void tick();
     else if (input === "n") setBranchInput("");
+    else if (input === "o") openPicker();
+    else if (input === "D") startRemove();
+    else if (input === "u") setShowUsage((v) => !v);
     else if (input === "?") setShowHelp((v) => !v);
     else if (key.ctrl && input === "l") forceRedraw();
     else if (input === "q") {
@@ -426,6 +638,9 @@ export function App(): React.JSX.Element {
   const pushLine = (el: React.JSX.Element, row: Row | null): void => {
     body.push({ el, row });
   };
+
+  const agentKinds = new Set(windowRows.map((r) => r.agent).filter(Boolean));
+  const showGlyph = !(HIDE_GLYPH_WHEN_UNIFORM && agentKinds.size <= 1);
 
   let ordinal = 0;
   for (const row of rows) {
@@ -463,8 +678,12 @@ export function App(): React.JSX.Element {
     const label =
       row.liveTitle ??
       (row.autoName ? row.title ?? `${row.sessionName}:${row.windowIndex}` : row.name);
-    // cc = claude code, co = codex. 어느 쪽도 아니면 자리만 비워 아이콘 열을 맞춘다.
-    const agentTag = row.agent ? `${AGENT_LABEL[row.agent]} ` : "   ";
+    // 어느 쪽도 아니면 자리만 비워 아이콘 열을 맞춘다. 종류가 하나뿐이면 열 자체가 사라진다.
+    const agentTag = showGlyph
+      ? row.agent
+        ? `${AGENT_GLYPH[row.agent]} `
+        : " ".repeat(AGENT_GLYPH_WIDTH + 1)
+      : "";
     const barColor = isSelected ? SELECT_COLOR : isCurrent ? CURRENT_COLOR : undefined;
 
     pushLine(
@@ -491,6 +710,44 @@ export function App(): React.JSX.Element {
       </Text>
     );
   }
+  if (confirm !== null) {
+    const { plan } = confirm;
+    footer.push(
+      <Text key="confirm" color="red" wrap="truncate-end">
+        {clip(
+          `rm ${basename(plan.entry.path)} (${plan.entry.branch ?? "detached"})  창 ${plan.windows.length}개 닫힘`,
+          width
+        ) + tail}
+      </Text>
+    );
+    footer.push(
+      <Text key="confirm-input" wrap="truncate-end">
+        {clip(
+          plan.changes === 0
+            ? "지우려면 y, 취소 Esc"
+            : `변경 ${plan.changes}개 있음. 지우려면 yes 입력: ${confirm.input}`,
+          width
+        ) + tail}
+      </Text>
+    );
+  }
+  if (picker !== null) {
+    footer.push(
+      <Text key="picker" wrap="truncate-end">
+        {clip("열기 (j/k Enter, Esc 취소)", width) + tail}
+      </Text>
+    );
+    picker.items.forEach((item, i) => {
+      const selected = i === picker.cursor;
+      const num = i < JUMP_MAX ? String(i + 1) : " ";
+      footer.push(
+        <Text key={`picker:${i}`} wrap="truncate-end">
+          <Text color={selected ? SELECT_COLOR : undefined}>{selected ? BAR : " "}</Text>
+          <Text dimColor={!selected}>{clip(`${num} ${item.label}`, width - 1) + tail}</Text>
+        </Text>
+      );
+    });
+  }
   if (statusMsg) {
     footer.push(
       <Text key="status" dimColor wrap="truncate-end">
@@ -506,6 +763,16 @@ export function App(): React.JSX.Element {
         {tail}
       </Text>
     );
+  }
+  if (showUsage) {
+    for (const [i, line] of formatUsageLines(usage, Date.now(), width).entries()) {
+      footer.push(
+        <Text key={`usage:${i}`} color={line.color} dimColor={!line.color} wrap="truncate-end">
+          {line.text}
+          {tail}
+        </Text>
+      );
+    }
   }
   if (showHelp) {
     for (const line of HELP_LINES) {
@@ -550,10 +817,14 @@ export function App(): React.JSX.Element {
   lineRowsRef.current = [null, ...visible.map((l) => l.row)];
   frameLinesRef.current = 1 + visible.length + shownFooter.length;
 
+  const abTag = ab === null ? "" : ab === "up" ? " ab●" : " ab✗";
+
   return (
     <Box flexDirection="column" width="100%">
       <Text bold wrap="truncate-end">
-        {clip(`sort: ${mode}${scrollHint}`, width) + tail}
+        {clip(`sort: ${mode}${scrollHint}`, Math.max(0, width - stringWidth(abTag)))}
+        {abTag ? <Text color={ab === "up" ? undefined : "red"}>{abTag}</Text> : null}
+        {tail}
       </Text>
       {visible.map((l) => l.el)}
       {shownFooter}
