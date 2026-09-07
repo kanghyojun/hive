@@ -22,6 +22,7 @@ function pane(overrides: Partial<PaneInfo>): PaneInfo {
     paneCurrentCommand: "claude",
     paneTitle: "",
     panePid: "1",
+    sidebarPaneId: "",
     ...overrides,
   };
 }

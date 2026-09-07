@@ -5,6 +5,7 @@ import {
   paneExists,
   setSessionHook,
   setSessionOption,
+  SIDEBAR_PANE_OPTION,
   splitLeft,
   tmux,
   unsetSessionHook,
@@ -13,7 +14,6 @@ import {
 import { selfCommand } from "./paths.js";
 
 export const SIDEBAR_WIDTH = 41;
-const SIDEBAR_PANE_OPTION = "@hive_sidebar_pane";
 const SIDEBAR_HOOK_INDEX = "session-window-changed[77]";
 
 function requireCurrentPane() {

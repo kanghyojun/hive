@@ -43,6 +43,7 @@ function pane(overrides: Partial<PaneInfo>): PaneInfo {
     paneCurrentCommand: "claude",
     paneTitle: "",
     panePid: "1",
+    sidebarPaneId: "",
     ...overrides,
   };
 }
@@ -97,6 +98,17 @@ describe("windowsInWorktree", () => {
 
   it("창이 없으면 빈 배열", () => {
     expect(windowsInWorktree(panes, "/w/none")).toEqual([]);
+  });
+
+  // 사이드바 pane은 hook을 타고 사용자가 보는 창으로 옮겨 다니지만 cwd는 처음 값 그대로다.
+  // 이걸 세면 남의 세션 창이 이 worktree 소속으로 잡혀 D 한 번에 같이 죽는다.
+  it("사이드바 pane은 자기 cwd가 맞아도 세지 않는다", () => {
+    const withSidebar = [
+      pane({ windowId: "@9", paneId: "%9", paneCurrentPath: "/w/feat", sidebarPaneId: "%9" }),
+      pane({ windowId: "@9", paneId: "%10", paneCurrentPath: "/w/other", sidebarPaneId: "%9" }),
+    ];
+    expect(windowsInWorktree(withSidebar, "/w/feat")).toEqual([]);
+    expect(windowsInWorktree(withSidebar, "/w/other")).toEqual([{ windowId: "@9", sessionName: "s" }]);
   });
 });
 

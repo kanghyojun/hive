@@ -93,7 +93,12 @@ export interface PaneInfo {
   /** claude가 OSC로 써 넣는 제목. 작업이 진행되면서 바뀐다. */
   paneTitle: string;
   panePid: string;
+  /** 이 pane이 속한 세션의 hive 사이드바 pane id. 사이드바가 없으면 빈 문자열. */
+  sidebarPaneId: string;
 }
+
+// sidebar.ts가 이 이름으로 세션 옵션을 심는다. 포맷 문자열 안에서는 값이 없어도 에러 대신 빈 문자열이 나온다(실측).
+export const SIDEBAR_PANE_OPTION = "@hive_sidebar_pane";
 
 const PANE_FIELDS = [
   "#{session_name}",
@@ -110,6 +115,7 @@ const PANE_FIELDS = [
   "#{pane_current_command}",
   "#{pane_title}",
   "#{pane_pid}",
+  `#{${SIDEBAR_PANE_OPTION}}`,
 ].join("\t");
 
 export function listPanes(): PaneInfo[] {
@@ -138,6 +144,7 @@ export function listPanes(): PaneInfo[] {
         paneCurrentCommand,
         paneTitle,
         panePid,
+        sidebarPaneId,
       ] = line.split("\t");
       return {
         sessionName,
@@ -154,6 +161,7 @@ export function listPanes(): PaneInfo[] {
         paneCurrentCommand,
         paneTitle,
         panePid,
+        sidebarPaneId,
       };
     });
 }

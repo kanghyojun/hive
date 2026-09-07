@@ -191,6 +191,9 @@ export function windowsInWorktree(
   const seen = new Set<string>();
   const windows: { windowId: string; sessionName: string }[] = [];
   for (const pane of panes) {
+    // 사이드바 pane은 hook이 사용자를 따라 창을 옮겨 다니는데 cwd는 만들어질 때 그대로다(실측).
+    // 이걸 세면 사이드바가 앉아 있는 남의 창까지 이 worktree 소속으로 잡혀 같이 죽는다.
+    if (pane.sidebarPaneId && pane.paneId === pane.sidebarPaneId) continue;
     const cwd = realpathOr(pane.paneCurrentPath);
     if (cwd !== root && !cwd.startsWith(`${root}/`)) continue;
     if (seen.has(pane.windowId)) continue;
