@@ -229,7 +229,14 @@ wt
       if (!other) {
         throw new Error("마지막 창이라 지울 수 없습니다. 다른 세션을 먼저 여세요");
       }
-      beforeKill = () => switchClient(other);
+      beforeKill = () => {
+        try {
+          switchClient(other);
+        } catch {
+          // 붙어 있는 클라이언트가 없으면 옮길 화면도 없다. 여기서 던지면 git이 이미
+          // worktree를 지운 뒤라 창만 남는다.
+        }
+      };
     }
 
     const result = wtRemove(plan, {

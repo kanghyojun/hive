@@ -405,7 +405,16 @@ export function App(): React.JSX.Element {
         const result = wtRemove(plan, {
           force,
           currentWindowId: currentWindowId ?? undefined,
-          beforeKill: moveTo ? () => switchClient(moveTo) : undefined,
+          beforeKill: moveTo
+            ? () => {
+                try {
+                  switchClient(moveTo);
+                } catch {
+                  // detach된 세션에서는 옮길 클라이언트가 없다. 여기서 던지면 git이 이미
+                  // worktree를 지운 뒤라 창만 남는다.
+                }
+              }
+            : undefined,
           panes,
         });
         const suffix = result.skippedReason ? ` — ${result.skippedReason}` : "";
