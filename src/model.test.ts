@@ -164,6 +164,57 @@ describe("buildRows 정렬 우선순위", () => {
     expect(rows.map((r) => r.windowId)).toEqual(["@3", "@2", "@1"]);
   });
 
+  // 실측: tmux의 window_activity는 "출력이 있었던 시각"이라 hive가 화면을 갱신하는 것만으로도
+  // 매초 올라간다. 창마다 갱신 시점이 1초씩 어긋나 순위가 계속 뒤집혔다.
+  it("입력 기록이 없는 창은 window_activity가 1초 흔들려도 순서를 지킨다", () => {
+    const order = (actA: number, actB: number) =>
+      windowRows(
+        buildRows({
+          panes: [
+            pane({ windowId: "@15", paneId: "%15", windowActivity: actA }),
+            pane({ windowId: "@45", paneId: "%45", windowActivity: actB }),
+          ],
+          agents: [
+            agent({ paneId: "%15", state: "idle", lastPromptTs: null }),
+            agent({ paneId: "%45", state: "idle", lastPromptTs: null }),
+          ],
+          repoByCwd: new Map(),
+          sleepMap: new Map([
+            ["@15", true],
+            ["@45", true],
+          ]),
+          now: 1788833200000,
+          mode: "recent",
+          tmuxPid: TMUX_PID,
+        })
+      ).map((r) => r.windowId);
+
+    const settled = order(1788833188, 1788833188);
+    expect(order(1788833189, 1788833190)).toEqual(settled);
+    expect(order(1788833190, 1788833189)).toEqual(settled);
+  });
+
+  it("입력 기록이 없어도 한참 오래된 창은 아래에 둔다", () => {
+    const rows = windowRows(
+      buildRows({
+        panes: [
+          pane({ windowId: "@14", paneId: "%14", windowActivity: 1788832184 }),
+          pane({ windowId: "@45", paneId: "%45", windowActivity: 1788833190 }),
+        ],
+        agents: [
+          agent({ paneId: "%14", state: "idle", lastPromptTs: null }),
+          agent({ paneId: "%45", state: "idle", lastPromptTs: null }),
+        ],
+        repoByCwd: new Map(),
+        sleepMap: new Map(),
+        now: 1788833200000,
+        mode: "recent",
+        tmuxPid: TMUX_PID,
+      })
+    );
+    expect(rows.map((r) => r.windowId)).toEqual(["@45", "@14"]);
+  });
+
   it("group 모드에서 잠자는 창은 저장소와 상관없이 맨 밑으로 모은다", () => {
     const repoA: RepoInfo = { toplevel: "/repo-a", repoRoot: "/repo-a", branch: "main" };
     const repoB: RepoInfo = { toplevel: "/repo-b", repoRoot: "/repo-b", branch: "main" };

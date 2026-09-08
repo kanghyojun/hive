@@ -284,13 +284,26 @@ export function buildRows(input: BuildRowsInput): Row[] {
   return out.map((r, i) => (r.kind === "window" ? r : { ...r, key: `group:${i}` }));
 }
 
+// tmux의 window_activity는 "출력이 있었던 시각"이라 hive가 화면을 갱신하는 것만으로도 매초 올라간다.
+// 창마다 갱신 시점이 1초씩 어긋나면 순위가 계속 뒤집히므로, 입력 기록이 없어 이 값에 기대는 행은
+// 분 단위로 뭉뚱그려 본다. 한참 오래된 창이 아래로 가는 성질은 그대로 남는다.
+const FALLBACK_BUCKET_MS = 60_000;
+
+function inputRank(row: Row): number {
+  if (!row.lastInputIsFallback) return row.lastInputTs;
+  return Math.floor(row.lastInputTs / FALLBACK_BUCKET_MS) * FALLBACK_BUCKET_MS;
+}
+
 // 잠자는 창을 맨 밑으로, 그 위는 관심 필요한 순, 같은 급이면 최근 입력 순.
 function sortByAttention(rows: Row[]): Row[] {
   return [...rows].sort((a, b) => {
     if (a.sleep !== b.sleep) return a.sleep ? 1 : -1;
     const attention = ATTENTION_PRIORITY[a.state] - ATTENTION_PRIORITY[b.state];
     if (attention !== 0) return attention;
-    return b.lastInputTs - a.lastInputTs;
+    const input = inputRank(b) - inputRank(a);
+    if (input !== 0) return input;
+    // 남는 동률은 창 id로 못박는다. 입력 순서에 기대면 tmux가 pane을 다르게 주는 날 순서가 흔들린다.
+    return a.windowId.localeCompare(b.windowId);
   });
 }
 
