@@ -4,7 +4,7 @@ tmux 위에서 여러 window의 AI agent(Claude Code, Codex) 상태를 한눈에
 
 ## 쓰레드뷰란
 
-hive에서 tmux window 하나가 스레드 하나입니다. 사이드바의 한 행은 window 하나를 나타내며, 그 window 안 pane에서 에이전트가 지금 뭘 하고 있는지를 보여줍니다. 행 맨 앞의 `✱`는 Claude Code, `⬡`는 Codex이고, 목록에 종류가 하나뿐이면 이 열은 표시하지 않습니다(표기는 `src/state.ts`의 `AGENT_GLYPH`). window 안에 pane이 여러 개면 그 중 가장 급한 상태를 대표로 보여줍니다(waiting이 working보다 우선, working이 idle보다 우선하는 식).
+hive에서 tmux window 하나가 스레드 하나입니다. 사이드바의 한 항목은 window 하나를 나타내며, 그 window 안 pane에서 에이전트가 지금 뭘 하고 있는지를 보여줍니다. 항목은 두 줄입니다. 첫 줄이 제목(에이전트가 지금 하는 일), 둘째 줄이 그 창이 앉아 있는 `워크트리 : 브랜치`입니다. 두 줄이 한 덩어리로 보이게 왼쪽에 세로선을 세우고, 고른 항목과 지금 창은 이 선이 굵어집니다. 저장소 이름만 따로 머리글로 올라갑니다. 행 맨 앞의 `✱`는 Claude Code, `⬡`는 Codex이고, 목록에 종류가 하나뿐이면 이 열은 표시하지 않습니다(표기는 `src/state.ts`의 `AGENT_GLYPH`). window 안에 pane이 여러 개면 그 중 가장 급한 상태를 대표로 보여줍니다(waiting이 working보다 우선, working이 idle보다 우선하는 식).
 
 상태는 5가지입니다.
 
@@ -90,7 +90,7 @@ bind W command-prompt -p "branch:" "run-shell -b \"<node> <cli.js> --pane '#{pan
 - `r`: 강제 새로고침
 - `q`: 종료 (hook/옵션 정리 후 pane이 닫힙니다)
 
-마우스는 사이드바 pane 안에서 왼쪽 클릭으로 행 선택+이동, 휠로 스크롤만 지원합니다. pane 바깥 클릭, 드래그, 더블클릭은 지원하지 않습니다.
+마우스는 사이드바 pane 안에서 왼쪽 클릭으로 항목 선택+이동, 휠로 스크롤만 지원합니다. 항목의 두 줄 중 어느 쪽을 눌러도 같은 창으로 갑니다. pane 바깥 클릭, 드래그, 더블클릭은 지원하지 않습니다.
 
 ## worktree
 

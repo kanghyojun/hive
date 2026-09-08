@@ -390,19 +390,18 @@ function repoKey(r: Row): string {
   return r.repoRoot ?? `__norepo__:${r.cwd}`;
 }
 
-// 두 모드 모두 저장소 → 워크트리 → 창 3층으로 그린다. 다른 건 순서뿐이다.
-// recent는 관심 순으로 늘어놓고, 앞 줄과 워크트리가 달라질 때마다 머리글 두 줄을 다시 찍는다.
+// 두 모드 모두 저장소 머리글 아래 창을 늘어놓는다. 워크트리는 머리글이 아니라 창의 둘째 줄로
+// 붙으므로(App.tsx) 여기서 따로 찍지 않는다. 다른 건 창의 순서뿐이다.
 function layoutRecent(rows: Row[]): Row[] {
   const out: Row[] = [];
   let lastKey: string | null = null;
   for (const row of sortByAttention(rows)) {
-    const key = worktreeKey(row);
+    const key = repoKey(row);
     if (key !== lastKey) {
       out.push(headerRow(`repo:${out.length}`, row.repoLabel, 0, [row]));
-      out.push(headerRow(`wt:${out.length}`, row.worktreeLabel, 1, [row]));
       lastKey = key;
     }
-    out.push({ ...row, depth: 2 });
+    out.push({ ...row, depth: 1 });
   }
   return out;
 }
@@ -421,9 +420,9 @@ function layoutGroup(rows: Row[]): Row[] {
   const out: Row[] = [];
   for (const repoRows of bucketBy(rows, repoKey)) {
     out.push(headerRow(`repo:${out.length}`, repoRows[0].repoLabel, 0, repoRows));
+    // 워크트리 머리글은 없애도 묶음 순서는 유지한다. 같은 워크트리 창이 흩어지지 않는다.
     for (const worktreeRows of bucketBy(repoRows, worktreeKey)) {
-      out.push(headerRow(`wt:${out.length}`, worktreeRows[0].worktreeLabel, 1, worktreeRows));
-      out.push(...sortByAttention(worktreeRows).map((r) => ({ ...r, depth: 2 })));
+      out.push(...sortByAttention(worktreeRows).map((r) => ({ ...r, depth: 1 })));
     }
   }
   return out;

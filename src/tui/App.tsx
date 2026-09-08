@@ -94,6 +94,8 @@ const SPINNER_MS = 400;
 // 한 행이 둘 다면 선택 색이 위에 온다. 대신 그 행으로 실제 옮겨가는 순간 선택을 아예 해제해서
 // 자홍 막대를 화면에서 없앤다. 남겨두면 사이드바로 돌아왔을 때 커서가 어디 있는지 헷갈린다.
 const BAR = "▌";
+// 창 한 개가 두 줄을 쓰므로 왼쪽에 세로선을 세워 어디까지가 한 항목인지 보이게 한다.
+const RAIL = "│";
 // 안 읽음 표시. 왼쪽의 선택/현재 막대(BAR)와 반대쪽을 채워 서로 헷갈리지 않게 한다.
 const UNREAD_BAR = "▐";
 // 지금 보고 있는 창이 주인공이라 진한 청록, 옮겨다니는 커서는 그보다 옅은 회색으로 둔다.
@@ -852,7 +854,9 @@ export function App(): React.JSX.Element {
 
     pushLine(
       <Text key={row.key} wrap="truncate-end">
-        <Text color={barColor}>{barColor ? BAR : " "}</Text>
+        <Text color={barColor} dimColor={!barColor}>
+          {barColor ? BAR : RAIL}
+        </Text>
         <Text
           bold={isCurrent}
           dimColor={row.sleep}
@@ -866,6 +870,18 @@ export function App(): React.JSX.Element {
           </Text>
         ) : null}
         <Text>{tail}</Text>
+      </Text>,
+      row
+    );
+
+    // 어느 워크트리의 창인지는 제목 아래에 붙인다. 클릭 판정에서 같은 row를 가리키므로
+    // 두 줄 어디를 눌러도 그 창으로 간다.
+    pushLine(
+      <Text key={`${row.key}:wt`} wrap="truncate-end">
+        <Text color={barColor} dimColor={!barColor}>
+          {barColor ? BAR : RAIL}
+        </Text>
+        <Text dimColor>{clip(`${indent}  ${row.worktreeLabel}`, width) + tail}</Text>
       </Text>,
       row
     );

@@ -240,15 +240,12 @@ describe("buildRows 정렬 우선순위", () => {
     });
     expect(rows.map((r) => (r.kind === "window" ? r.windowId : `#${r.name}`))).toEqual([
       "#repo-a",
-      "#repo-a : main",
       "@1",
       "#repo-b",
-      "#repo-b : main",
       "@2",
       "#",
       "#잠자는 중",
       "#repo-a",
-      "#repo-a : main",
       "@3",
     ]);
   });
@@ -372,6 +369,55 @@ describe("buildRows group 모드", () => {
     expect(windows.map((r) => r.windowId)).toEqual(["@2", "@1"]);
   });
 
+  it("워크트리는 머리글로 찍지 않는다. 저장소 머리글만 남는다", () => {
+    const wtA: RepoInfo = { toplevel: "/src/hive-a", repoRoot: "/src/hive", branch: "a" };
+    const wtB: RepoInfo = { toplevel: "/src/hive-b", repoRoot: "/src/hive", branch: "b" };
+    const rows = buildRows({
+      panes: [
+        pane({ windowId: "@1", paneId: "%1", paneCurrentPath: "/src/hive-a" }),
+        pane({ windowId: "@2", paneId: "%2", paneCurrentPath: "/src/hive-b" }),
+      ],
+      agents: [
+        agent({ paneId: "%1", lastPromptTs: 2000 }),
+        agent({ paneId: "%2", lastPromptTs: 1000 }),
+      ],
+      repoByCwd: new Map([
+        ["/src/hive-a", wtA],
+        ["/src/hive-b", wtB],
+      ]),
+      sleepMap: new Map(),
+      now: 5000,
+      mode: "recent",
+      tmuxPid: TMUX_PID,
+    });
+    // 워크트리가 둘로 갈려도 같은 저장소면 머리글은 한 번이다.
+    expect(rows.filter((r) => r.kind === "group").map((r) => r.name)).toEqual(["hive"]);
+  });
+
+  it("group 모드에서도 워크트리 머리글은 찍지 않는다", () => {
+    const wtA: RepoInfo = { toplevel: "/src/hive-a", repoRoot: "/src/hive", branch: "a" };
+    const wtB: RepoInfo = { toplevel: "/src/hive-b", repoRoot: "/src/hive", branch: "b" };
+    const rows = buildRows({
+      panes: [
+        pane({ windowId: "@1", paneId: "%1", paneCurrentPath: "/src/hive-a" }),
+        pane({ windowId: "@2", paneId: "%2", paneCurrentPath: "/src/hive-b" }),
+      ],
+      agents: [
+        agent({ paneId: "%1", lastPromptTs: 2000 }),
+        agent({ paneId: "%2", lastPromptTs: 1000 }),
+      ],
+      repoByCwd: new Map([
+        ["/src/hive-a", wtA],
+        ["/src/hive-b", wtB],
+      ]),
+      sleepMap: new Map(),
+      now: 5000,
+      mode: "group",
+      tmuxPid: TMUX_PID,
+    });
+    expect(rows.filter((r) => r.kind === "group").map((r) => r.name)).toEqual(["hive"]);
+  });
+
   it("repo가 다른 window는 별도 그룹으로 나뉜다", () => {
     const repoA: RepoInfo = { toplevel: "/repo-a", repoRoot: "/repo-a", branch: "main" };
     const repoB: RepoInfo = { toplevel: "/repo-b", repoRoot: "/repo-b", branch: "main" };
@@ -399,9 +445,7 @@ describe("buildRows group 모드", () => {
     const groupNames = rows.filter((r) => r.kind !== "window").map((r) => [r.depth, r.name]);
     expect(groupNames).toEqual([
       [0, "repo-b"],
-      [1, "repo-b : main"],
       [0, "repo-a"],
-      [1, "repo-a : main"],
     ]);
   });
 });
