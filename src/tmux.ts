@@ -95,6 +95,8 @@ export interface PaneInfo {
   panePid: string;
   /** 이 pane이 속한 세션의 hive 사이드바 pane id. 사이드바가 없으면 빈 문자열. */
   sidebarPaneId: string;
+  /** 이 pane의 세션에 붙어 있는 클라이언트가 있는지. windowActive와 같이 봐야 "사람이 보고 있는 창"이 된다. */
+  sessionAttached: boolean;
 }
 
 // sidebar.ts가 이 이름으로 세션 옵션을 심는다. 포맷 문자열 안에서는 값이 없어도 에러 대신 빈 문자열이 나온다(실측).
@@ -116,6 +118,8 @@ const PANE_FIELDS = [
   "#{pane_title}",
   "#{pane_pid}",
   `#{${SIDEBAR_PANE_OPTION}}`,
+  // 붙어 있는 클라이언트 수다. 0이면 아무도 이 세션을 보고 있지 않다.
+  "#{session_attached}",
 ].join("\t");
 
 export function listPanes(): PaneInfo[] {
@@ -145,6 +149,7 @@ export function listPanes(): PaneInfo[] {
         paneTitle,
         panePid,
         sidebarPaneId,
+        sessionAttached,
       ] = line.split("\t");
       return {
         sessionName,
@@ -162,6 +167,7 @@ export function listPanes(): PaneInfo[] {
         paneTitle,
         panePid,
         sidebarPaneId,
+        sessionAttached: sessionAttached !== undefined && sessionAttached !== "0",
       };
     });
 }

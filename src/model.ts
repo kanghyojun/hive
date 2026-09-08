@@ -325,12 +325,17 @@ export interface UnreadUpdate {
   unread: boolean;
 }
 
-// 상태가 직전에 본 것과 달라진 창만 골라낸다. 지금 보고 있는 창은 눈앞에서 바뀐 것이라
+// 상태가 직전에 본 것과 달라진 창만 골라낸다. 사람이 지금 보고 있는 창은 눈앞에서 바뀐 것이라
 // 표시를 붙이지 않고 본 상태만 갱신한다.
+//
+// "보고 있는 창"은 사이드바 자기 창이 아니라 tmux 전체에서 뽑아야 한다. 사이드바는 세션마다
+// 하나씩 떠 있고 전부 같은 DB에 쓴다. 자기 창을 기준으로 삼으면, 떨어져 있는 세션의 사이드바가
+// 자기 창의 변화를 "내가 보고 있으니 표시 안 함"으로 먼저 적어버려서 다른 사이드바는 그 변화를
+// 아예 못 본다(seenState가 이미 갱신돼 있어 건너뛴다). 알림이 tick 순서에 따라 무작위로 사라진다.
 export function unreadUpdates(input: {
   rows: Row[];
   seenStates: Map<string, string | null>;
-  currentWindowId: string | null;
+  viewedWindowIds: ReadonlySet<string>;
 }): UnreadUpdate[] {
   const updates: UnreadUpdate[] = [];
   for (const row of input.rows) {
@@ -339,7 +344,7 @@ export function unreadUpdates(input: {
     updates.push({
       windowId: row.windowId,
       seenState: row.state,
-      unread: NOTIFY_STATES.has(row.state) && row.windowId !== input.currentWindowId,
+      unread: NOTIFY_STATES.has(row.state) && !input.viewedWindowIds.has(row.windowId),
     });
   }
   return updates;

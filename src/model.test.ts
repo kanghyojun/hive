@@ -23,6 +23,7 @@ function pane(overrides: Partial<PaneInfo>): PaneInfo {
     paneTitle: "",
     panePid: "1",
     sidebarPaneId: "",
+    sessionAttached: false,
     ...overrides,
   };
 }
@@ -685,7 +686,7 @@ describe("unreadUpdates", () => {
     const out = unreadUpdates({
       rows: [row({ windowId: "@1", state: "done" })],
       seenStates: new Map(),
-      currentWindowId: null,
+      viewedWindowIds: new Set<string>(),
     });
     expect(out).toEqual([{ windowId: "@1", seenState: "done", unread: true }]);
   });
@@ -694,7 +695,7 @@ describe("unreadUpdates", () => {
     const out = unreadUpdates({
       rows: [row({ windowId: "@1", state: "done" })],
       seenStates: new Map([["@1", "done"]]),
-      currentWindowId: null,
+      viewedWindowIds: new Set<string>(),
     });
     expect(out).toEqual([]);
   });
@@ -706,7 +707,7 @@ describe("unreadUpdates", () => {
         ["@1", "done"],
         ["@2", "working"],
       ]),
-      currentWindowId: null,
+      viewedWindowIds: new Set<string>(),
     });
     expect(out.map((u) => u.unread)).toEqual([false, false]);
     expect(out.map((u) => u.seenState)).toEqual(["working", "idle"]);
@@ -716,16 +717,28 @@ describe("unreadUpdates", () => {
     const out = unreadUpdates({
       rows: [row({ windowId: "@1", state: "done" })],
       seenStates: new Map([["@1", "working"]]),
-      currentWindowId: "@1",
+      viewedWindowIds: new Set(["@1"]),
     });
     expect(out).toEqual([{ windowId: "@1", seenState: "done", unread: false }]);
+  });
+
+  // 사이드바는 세션마다 하나씩 뜬다. 자기 창을 기준으로 판정하면 떨어져 있는 세션의 사이드바가
+  // 자기 창의 변화를 먼저 "본 것"으로 적어버려 다른 사이드바가 알림을 놓친다.
+  it("아무도 안 붙어 있는 세션의 창은 그 세션 사이드바가 판정해도 안 읽음을 켠다", () => {
+    const out = unreadUpdates({
+      rows: [row({ windowId: "@2", state: "waiting" })],
+      seenStates: new Map([["@2", "working"]]),
+      // 붙어 있는 클라이언트가 보는 창은 @1뿐이다.
+      viewedWindowIds: new Set(["@1"]),
+    });
+    expect(out).toEqual([{ windowId: "@2", seenState: "waiting", unread: true }]);
   });
 
   it("done에서 waiting으로 넘어가면 다시 켠다", () => {
     const out = unreadUpdates({
       rows: [row({ windowId: "@1", state: "waiting" })],
       seenStates: new Map([["@1", "done"]]),
-      currentWindowId: null,
+      viewedWindowIds: new Set<string>(),
     });
     expect(out).toEqual([{ windowId: "@1", seenState: "waiting", unread: true }]);
   });
@@ -734,7 +747,7 @@ describe("unreadUpdates", () => {
     const out = unreadUpdates({
       rows: [row({ kind: "group", windowId: "", state: "done" })],
       seenStates: new Map(),
-      currentWindowId: null,
+      viewedWindowIds: new Set<string>(),
     });
     expect(out).toEqual([]);
   });

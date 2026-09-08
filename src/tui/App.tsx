@@ -255,11 +255,16 @@ export function App(): React.JSX.Element {
       });
 
       // 상태가 바뀐 창에 안 읽음을 켠다. 방금 켠 건 다음 tick을 기다리지 않고 이번 프레임에 바로 그린다.
+      // "사람이 보고 있는 창"은 자기 창이 아니라 tmux 전체에서 뽑는다. 사이드바는 세션마다 하나씩
+      // 떠서 같은 DB에 쓰기 때문에, 자기 창 기준으로 판정하면 사이드바끼리 알림을 지운다(model.ts 주석).
+      const viewedWindowIds = new Set(
+        panes.filter((p) => p.windowActive && p.sessionAttached).map((p) => p.windowId)
+      );
       const justUnread = new Set<string>();
       for (const u of unreadUpdates({
         rows: nextRows,
         seenStates: new Map([...flags].map(([id, f]) => [id, f.seenState])),
-        currentWindowId: myWindowId,
+        viewedWindowIds,
       })) {
         db.setSeenState(server.startTime, u.windowId, u.seenState);
         if (!u.unread) continue;
