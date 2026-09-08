@@ -19,6 +19,7 @@ import {
   type WorktreeEntry,
 } from "./git.js";
 import {
+  currentPaneId,
   insideTmux,
   killWindow,
   listPanes,
@@ -26,6 +27,7 @@ import {
   sanitizeSessionName,
   sessionExists,
   switchClient,
+  windowSize,
   type PaneInfo,
 } from "./tmux.js";
 import { attachSidebar } from "./sidebar.js";
@@ -120,10 +122,14 @@ function openWorktreeSession(opts: { path: string; name: string; script?: string
   const runInitArgs = opts.script ? `${shQuote(opts.path)} ${shQuote(opts.script)}` : shQuote(opts.path);
   const windowCommand = `${shQuote(node)} ${shQuote(cli)} wt run-init ${runInitArgs}; exec \${SHELL:-sh}`;
   // worktree 하나가 세션 하나다. 같은 세션에 window로 붙이면 브랜치를 오갈 때마다 window 목록이 섞인다.
+  // 지금 보고 있는 window와 같은 크기로 열지 않으면, 나중에 클라이언트가 붙을 때 tmux가 pane을 비율로
+  // 늘려서 사이드바가 화면 절반을 차지한다(tmux.ts의 windowSize 주석 참고).
+  const here = currentPaneId();
   const { sessionName, windowId } = newSession({
     name: uniqueSessionName(opts.name),
     cwd: opts.path,
     command: windowCommand,
+    size: here ? windowSize(here) : undefined,
   });
 
   attachSidebar(sessionName, windowId);

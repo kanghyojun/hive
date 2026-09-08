@@ -20,6 +20,7 @@ import {
   listPanes,
   listProcesses,
   selectWindow,
+  resizePaneWidth,
   serverInfo,
   switchClient,
   currentSessionName,
@@ -280,6 +281,26 @@ export function App(): React.JSX.Element {
     const timer = setInterval(() => setFrame((f) => f + 1), SPINNER_MS);
     return () => clearInterval(timer);
   }, [hasWorking]);
+
+  // tmux는 window 크기가 바뀌면 pane을 비율로 다시 나눈다. 크기가 다른 클라이언트가 오가거나
+  // 새 세션이 다른 크기로 만들어지면 41칸이던 사이드바가 27칸이나 78칸으로 벌어진다(실측).
+  // 폭이 어긋나면 스스로 되돌린다. 같은 폭에서 되돌리기가 안 먹으면(창이 너무 좁으면) 다시 시도하지 않는다.
+  const widthFixRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (!columns || columns === SIDEBAR_WIDTH) {
+      widthFixRef.current = null;
+      return;
+    }
+    if (widthFixRef.current === columns) return;
+    widthFixRef.current = columns;
+    const myPane = currentPaneId();
+    if (!myPane) return;
+    try {
+      resizePaneWidth(myPane, SIDEBAR_WIDTH);
+    } catch {
+      // 창이 좁아 41칸을 못 주면 tmux가 거절한다. 다음 크기 변화까지 그대로 둔다.
+    }
+  }, [columns]);
 
   const selectedRow = rows.find((r) => r.key === selectedKey);
   // 창으로 옮겨가면 커서를 지우기 때문에 평소에는 커서가 없다. 그때 s나 n이 아무 일도 안 하면

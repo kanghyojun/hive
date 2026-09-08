@@ -97,6 +97,8 @@ hive wt rm <branch|path|디렉토리이름> [--repo <path>] [--force]
 hive wt list [--repo <path>]
 ```
 
+`wt new`가 여는 세션은 지금 보고 있는 window와 같은 크기로 만듭니다. 크기를 안 주면 tmux가 `default-size`(80x24)나 마지막 클라이언트 크기로 세션을 만들고, 나중에 클라이언트가 붙을 때 pane을 비율로 늘려 사이드바가 화면 절반을 차지합니다.
+
 `wt new`는 `HIVE_WORKTREE_BASE` 아래에 git worktree를 만들고, init script(`HIVE_INIT_SCRIPT` env > `<repo>/.hive/init.sh` 순으로 찾음)를 실행한 뒤, **tmux 세션을 하나 새로 엽니다**(왼쪽 쓰레드뷰, 오른쪽 init 로그 → 셸). worktree 하나가 세션 하나입니다. 세션 이름은 브랜치명이고(`/`, `.`, `:`, 공백은 `-`로 바꿉니다), 같은 이름이 이미 있으면 `-2`, `-3`을 붙입니다. 세션을 만든 뒤에는 붙어 있는 클라이언트를 그 세션으로 옮깁니다(`switched: false`면 옮길 클라이언트가 없었다는 뜻이고, 세션은 그대로 만들어져 있습니다).
 
 세션을 새로 여는 건 `wt new`뿐입니다. 같은 세션 안에 손으로 window를 열어 다른 worktree에서 작업해도 사이드바는 그대로 잡습니다. 목록은 세션이 아니라 window 단위입니다.
@@ -166,5 +168,5 @@ hive usage    # 두 출처에서 읽은 원본과 스냅샷 경로 확인
 - 마우스 클릭 좌표가 pane 기준인지는 사람이 실제로 클릭해서 확인해야 합니다(자동 검증 범위 밖).
 - 다른 tmux 세션의 window로는 목록에 보이되 dim 처리되고, 이동 시 `switch-client`를 시도합니다만 이 경로는 실사용에서 충분히 검증되지 않았습니다.
 - codex를 npm 래퍼로 설치하면 `#{pane_current_command}`가 `node`로 나옵니다(실측). 그래서 3초마다 `ps`로 pane 하위 프로세스를 훑어 `claude`/`codex`를 찾습니다. 한 pane에서 claude가 codex를 자식으로 돌리면 얕은 쪽인 claude로 표시됩니다.
-- 사이드바 폭은 41칸으로 고정입니다(`src/sidebar.ts`의 `SIDEBAR_WIDTH`). pane 크기를 수동으로 바꿔도 다음 window 이동에서 41로 돌아옵니다.
+- 사이드바 폭은 41칸으로 고정입니다(`src/sidebar.ts`의 `SIDEBAR_WIDTH`). tmux는 window 크기가 바뀌면 pane을 비율로 다시 나누기 때문에, 크기가 다른 클라이언트가 오가면 이 폭이 27칸이나 78칸으로 벌어집니다. TUI가 자기 폭을 보고 어긋나면 1초 안에 41로 되돌립니다. 그래서 pane 크기를 수동으로 바꿔도 유지되지 않습니다. 창이 좁아 41칸을 못 주면 되돌리기를 포기하고 다음 크기 변화까지 그대로 둡니다.
 - transcript tail, OSC 타이틀 파싱, 알림, 원격 접근, 멀티 머신 동기화, 테마, CI, 배포는 이번 프로토타입 범위 밖입니다.
