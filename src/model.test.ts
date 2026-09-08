@@ -194,6 +194,62 @@ describe("buildRows 정렬 우선순위", () => {
     expect(order(1788833190, 1788833189)).toEqual(settled);
   });
 
+  it("group 모드 저장소 묶음도 window_activity가 1초 흔들려도 순서를 지킨다", () => {
+    const repoA: RepoInfo = { toplevel: "/repo-a", repoRoot: "/repo-a", branch: "main" };
+    const repoB: RepoInfo = { toplevel: "/repo-b", repoRoot: "/repo-b", branch: "main" };
+    const order = (actA: number, actB: number) =>
+      buildRows({
+        panes: [
+          pane({ windowId: "@1", paneId: "%1", paneCurrentPath: "/repo-a", windowActivity: actA }),
+          pane({ windowId: "@2", paneId: "%2", paneCurrentPath: "/repo-b", windowActivity: actB }),
+        ],
+        agents: [
+          agent({ paneId: "%1", state: "idle", lastPromptTs: null }),
+          agent({ paneId: "%2", state: "idle", lastPromptTs: null }),
+        ],
+        repoByCwd: new Map([
+          ["/repo-a", repoA],
+          ["/repo-b", repoB],
+        ]),
+        sleepMap: new Map(),
+        now: 1788833200000,
+        mode: "group",
+        tmuxPid: TMUX_PID,
+      })
+        .filter((r) => r.kind === "group")
+        .map((r) => r.name);
+
+    const settled = order(1788833188, 1788833188);
+    expect(order(1788833189, 1788833190)).toEqual(settled);
+    expect(order(1788833190, 1788833189)).toEqual(settled);
+  });
+
+  it("group 모드에서도 한참 오래된 저장소는 아래에 둔다", () => {
+    const repoA: RepoInfo = { toplevel: "/repo-a", repoRoot: "/repo-a", branch: "main" };
+    const repoB: RepoInfo = { toplevel: "/repo-b", repoRoot: "/repo-b", branch: "main" };
+    const names = buildRows({
+      panes: [
+        pane({ windowId: "@1", paneId: "%1", paneCurrentPath: "/repo-a", windowActivity: 1788832184 }),
+        pane({ windowId: "@2", paneId: "%2", paneCurrentPath: "/repo-b", windowActivity: 1788833190 }),
+      ],
+      agents: [
+        agent({ paneId: "%1", state: "idle", lastPromptTs: null }),
+        agent({ paneId: "%2", state: "idle", lastPromptTs: null }),
+      ],
+      repoByCwd: new Map([
+        ["/repo-a", repoA],
+        ["/repo-b", repoB],
+      ]),
+      sleepMap: new Map(),
+      now: 1788833200000,
+      mode: "group",
+      tmuxPid: TMUX_PID,
+    })
+      .filter((r) => r.kind === "group")
+      .map((r) => r.name);
+    expect(names).toEqual(["repo-b", "repo-a"]);
+  });
+
   it("입력 기록이 없어도 한참 오래된 창은 아래에 둔다", () => {
     const rows = windowRows(
       buildRows({

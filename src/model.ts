@@ -406,6 +406,12 @@ function layoutRecent(rows: Row[]): Row[] {
   return out;
 }
 
+// 묶음끼리 견줄 때도 창 하나를 견줄 때와 같은 잣대를 쓴다. 원본 타임스탬프를 그대로 쓰면
+// window_activity의 1초 노이즈가 저장소 묶음 순서까지 흔든다(sortByAttention 주석 참고).
+function maxInputRank(rows: Row[]): number {
+  return rows.reduce((max, r) => Math.max(max, inputRank(r)), 0);
+}
+
 function bucketBy(rows: Row[], keyOf: (r: Row) => string): Row[][] {
   const buckets = new Map<string, Row[]>();
   for (const r of rows) {
@@ -413,7 +419,10 @@ function bucketBy(rows: Row[], keyOf: (r: Row) => string): Row[][] {
     list.push(r);
     buckets.set(keyOf(r), list);
   }
-  return [...buckets.values()].sort((a, b) => maxInputTs(b) - maxInputTs(a));
+  return [...buckets.entries()]
+    // 남는 동률은 묶음 키로 못박는다. 삽입 순서에 기대면 tmux가 pane을 다르게 주는 날 흔들린다.
+    .sort(([ka, a], [kb, b]) => maxInputRank(b) - maxInputRank(a) || ka.localeCompare(kb))
+    .map(([, bucket]) => bucket);
 }
 
 function layoutGroup(rows: Row[]): Row[] {
