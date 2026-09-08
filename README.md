@@ -14,7 +14,7 @@ hive에서 tmux window 하나가 스레드 하나입니다. 사이드바의 한 
 - `idle`(·): `SessionEnd`가 오거나, 마지막 이벤트로부터 30분이 지나면.
 - `unknown`(◌): hook 이벤트가 하나도 없는데 pane에 에이전트가 떠 있으면.
 
-sleep(`s` 키)은 표시 전용입니다. 이벤트 흡수와 상태 계산은 계속하지만 화면에서는 어둡게(dimColor) 표시하고 목록 맨 아래로 내립니다.
+sleep(`s` 키)은 표시 전용입니다. 이벤트 흡수와 상태 계산은 계속하지만 화면에서는 어둡게(dimColor) 표시하고 목록 맨 아래로 내립니다. 자는 창으로 직접 들어가면(Enter, 숫자, 클릭) sleep이 풀립니다. 보고 있는 창이 목록 맨 아래 어두운 자리에 남아 있을 이유가 없습니다.
 
 두 보기 모드(`g` 키로 전환)가 있습니다. `recent`는 최근 입력순 단일 목록이고, `group`은 저장소(repoRoot) → worktree 순으로 묶은 목록입니다. 마지막으로 고른 모드는 `~/.hive/ui.json`에 저장됩니다.
 
@@ -75,7 +75,7 @@ bind W command-prompt -p "branch:" "run-shell -b \"<node> <cli.js> --pane '#{pan
 사이드바 TUI 안에서:
 
 - `j`/`k`/↑/↓: 행 이동
-- `Enter`: 선택한 window로 이동 (사이드바는 그 window를 따라옵니다)
+- `Enter`: 선택한 window로 이동 (사이드바는 그 window를 따라옵니다). 자는 창이면 sleep이 풀립니다
 - `s`: 선택한 window sleep 토글
 - `g`: `recent`/`group` 보기 전환
 - `n`: branch 이름 입력 후 그 저장소에 `wt new` 실행 (새 세션이 열리고 그리로 이동합니다)

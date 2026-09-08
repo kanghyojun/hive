@@ -341,6 +341,13 @@ export function App(): React.JSX.Element {
       selectWindow(row.windowId);
       // 창만 고르면 마지막으로 보던 pane(사이드바일 때가 많다)이 잡힌다. claude가 도는 pane으로 옮긴다.
       if (row.agentPaneId) selectPane(row.agentPaneId);
+      // 직접 들어간 창은 더 이상 자는 창이 아니다. 여기서 풀어주지 않으면 목록 맨 아래 어두운 자리에
+      // 지금 보고 있는 창이 남아서, s를 한 번 더 눌러야 제자리로 온다.
+      const db = dbRef.current;
+      if (row.sleep && db) {
+        db.setSleep(serverInfo().startTime, row.windowId, false);
+        void tickRef.current();
+      }
       // 옮겨갔으면 커서는 할 일이 끝났다. 그 창은 이제 "지금 창"(청록)으로 표시된다.
       setSelectedKey(null);
     } catch (err) {
