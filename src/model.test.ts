@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildRows, resolvePaneAgents, unreadUpdates, type Row } from "./model.js";
+import { buildRows, readWindowIds, resolvePaneAgents, unreadUpdates, type Row } from "./model.js";
 import type { AgentRecord } from "./state.js";
 import type { PaneInfo } from "./tmux.js";
 import type { RepoInfo } from "./git.js";
@@ -750,5 +750,42 @@ describe("unreadUpdates", () => {
       viewedWindowIds: new Set<string>(),
     });
     expect(out).toEqual([]);
+  });
+
+  // unreadUpdates는 상태가 바뀌는 그 순간에만 판정한다. 자리를 비운 사이 켜진 표시는
+  // 사이드바에서 점프해 들어가지 않는 한 아무도 꺼주지 않아서, tmux로 직접 창을 옮기면
+  // 지금 보고 있는 창에 안 읽음 막대가 그대로 남는다.
+  describe("readWindowIds", () => {
+    it("보고 있는 창에 남아 있는 안 읽음은 지운다", () => {
+      const out = readWindowIds({
+        rows: [row({ windowId: "@1", state: "done", unread: true })],
+        viewedWindowIds: new Set(["@1"]),
+      });
+      expect(out).toEqual(["@1"]);
+    });
+
+    it("아무도 안 보는 창의 안 읽음은 그대로 둔다", () => {
+      const out = readWindowIds({
+        rows: [row({ windowId: "@2", state: "done", unread: true })],
+        viewedWindowIds: new Set(["@1"]),
+      });
+      expect(out).toEqual([]);
+    });
+
+    it("안 읽음이 아닌 창은 지울 것이 없다", () => {
+      const out = readWindowIds({
+        rows: [row({ windowId: "@1", state: "done", unread: false })],
+        viewedWindowIds: new Set(["@1"]),
+      });
+      expect(out).toEqual([]);
+    });
+
+    it("머리글 행은 건너뛴다", () => {
+      const out = readWindowIds({
+        rows: [row({ kind: "group", windowId: "", unread: true })],
+        viewedWindowIds: new Set([""]),
+      });
+      expect(out).toEqual([]);
+    });
   });
 });

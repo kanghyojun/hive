@@ -15,7 +15,7 @@ import {
 import { basename } from "node:path";
 import { listWorktrees, resolveRepo, type RepoInfo } from "../git.js";
 import { buildRows,
-  unreadUpdates, resolvePaneAgents, type Row, type ViewMode } from "../model.js";
+  unreadUpdates, readWindowIds, resolvePaneAgents, type Row, type ViewMode } from "../model.js";
 import {
   capturePaneTail,
   listPanes,
@@ -292,12 +292,22 @@ export function App(): React.JSX.Element {
         justUnread.add(u.windowId);
       }
 
+      // 보고 있는 창에 남아 있는 안 읽음은 지운다. 켤 때와 기준이 같아서 새로 켠 표시를 되돌리는
+      // 일은 없다. 사이드바에서 점프해 들어갈 때만 꺼주면, tmux로 직접 옮겨 다닌 창은 표시가
+      // 영영 안 꺼져서 지금 보고 앉은 창에 막대가 남는다(model.ts readWindowIds 주석).
+      const justRead = new Set(readWindowIds({ rows: nextRows, viewedWindowIds }));
+      for (const windowId of justRead) db.setUnread(server.startTime, windowId, false);
+
       setCurrentWindowId(myWindowId);
 
       setRows(
-        justUnread.size === 0
+        justUnread.size === 0 && justRead.size === 0
           ? nextRows
-          : nextRows.map((r) => (justUnread.has(r.windowId) ? { ...r, unread: true } : r))
+          : nextRows.map((r) => {
+              if (justUnread.has(r.windowId)) return { ...r, unread: true };
+              if (justRead.has(r.windowId)) return { ...r, unread: false };
+              return r;
+            })
       );
       setError(null);
     } catch (err) {

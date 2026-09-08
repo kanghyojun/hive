@@ -350,6 +350,26 @@ export function unreadUpdates(input: {
   return updates;
 }
 
+// 지금 사람이 보고 있는 창은 정의상 읽은 창이다. unreadUpdates는 상태가 바뀌는 그 순간에만
+// 판정하고, 켜진 표시는 사이드바에서 점프해 들어갈 때(App.tsx activateRow)만 꺼진다. 그래서
+// 자리를 비운 사이 켜진 표시가 tmux로 직접 창을 옮겨 들어가면 아무도 안 꺼줘서, 지금 보고
+// 앉아 채팅하는 창에 안 읽음 막대가 계속 남는다.
+//
+// 매 tick 이 규칙을 다시 맞춰 스스로 풀리게 한다. 켜는 쪽과 판정 기준이 같으므로 여기서
+// 지우는 건 애초에 켜지지 않았어야 할 표시뿐이다. 옛 사이드바가 같은 DB에 잘못 적어 둔 표시도
+// 같이 정리된다.
+export function readWindowIds(input: {
+  rows: Row[];
+  viewedWindowIds: ReadonlySet<string>;
+}): string[] {
+  const ids: string[] = [];
+  for (const row of input.rows) {
+    if (row.kind !== "window" || !row.unread) continue;
+    if (input.viewedWindowIds.has(row.windowId)) ids.push(row.windowId);
+  }
+  return ids;
+}
+
 function maxInputTs(rows: Row[]): number {
   return rows.reduce((max, r) => Math.max(max, r.lastInputTs), 0);
 }
