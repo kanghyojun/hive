@@ -165,7 +165,10 @@ export function worktreeAdd(opts: { repoRoot: string; branch: string; path: stri
   execFileSync("git", args, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
 }
 
+// hive가 판 worktree는 hive-worktrees 한 곳에 모으고, 그 안에서 저장소 이름으로 나눈다.
+// 디렉토리 이름이 곧 "hive가 만든 것"이라는 표시다. 저장소마다 <이름>-worktrees를 따로 만들면
+// 저장소 부모가 그 디렉토리들로 어지러워지고, 한 곳에 모으면 이번엔 브랜치 이름이 서로 부딪힌다.
 export function worktreeBasePath(repoRoot: string): string {
-  const template = process.env.HIVE_WORKTREE_BASE || "{repoParent}/{repo}-worktrees";
+  const template = process.env.HIVE_WORKTREE_BASE || "{repoParent}/hive-worktrees/{repo}";
   return template.replaceAll("{repoParent}", dirname(repoRoot)).replaceAll("{repo}", basename(repoRoot));
 }

@@ -160,7 +160,7 @@ hive usage    # 두 출처에서 읽은 원본과 스냅샷 경로 확인
 ## 환경변수
 
 - `HIVE_HOME` (기본 `~/.hive`): `hive.db`, `spool/`, `logs/`, `ui.json`을 두는 데이터 디렉토리.
-- `HIVE_WORKTREE_BASE` (기본 `{repoParent}/{repo}-worktrees`): `wt new`가 worktree를 만들 위치. `{repoParent}`, `{repo}` 플레이스홀더를 치환합니다.
+- `HIVE_WORKTREE_BASE` (기본 `{repoParent}/hive-worktrees/{repo}`): `wt new`가 worktree를 만들 위치. `{repoParent}`, `{repo}` 플레이스홀더를 치환합니다. hive가 판 worktree는 `hive-worktrees` 한 곳에 모이고 그 안에서 저장소 이름으로 나뉩니다. 디렉토리 이름 자체가 "hive가 만든 것"이라는 표시입니다. 브랜치명의 `/`는 `-`로 바뀝니다(`feature/a` → `feature-a`).
 - `HIVE_INIT_SCRIPT`: `<repo>/.hive/init.sh`보다 우선하는 init script 절대경로.
 - `HIVE_TMUX_SOCKET`: tmux 소켓 경로. 없으면 `$TMUX`의 첫 필드, 그것도 없으면 기본 소켓.
 - `CLAUDE_CONFIG_DIR`: `hive hook`이 기본으로 읽고 쓰는 `settings.json`의 디렉토리. 사용량은 자기 스냅샷이 없을 때만 이 디렉토리 아래 `plugins/claude-hud/config.json`도 읽습니다(읽기만 합니다).

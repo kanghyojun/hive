@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { cleanGitError, parseWorktreeList } from "./git.js";
+import { afterEach, describe, expect, it } from "vitest";
+import { cleanGitError, parseWorktreeList, worktreeBasePath } from "./git.js";
 
 // git 2.39.5의 `worktree list --porcelain` 실측 출력. 마지막 항목은 디렉토리를 손으로 지운 worktree다.
 const PORCELAIN = `worktree /w/main
@@ -58,5 +58,35 @@ describe("cleanGitError", () => {
 
   it("stderr가 비면 자리를 지키는 문구를 쓴다", () => {
     expect(cleanGitError("   \n", "/w/feat")).toBe("git worktree remove 실패");
+  });
+});
+
+describe("worktreeBasePath", () => {
+  const saved = process.env.HIVE_WORKTREE_BASE;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.HIVE_WORKTREE_BASE;
+    else process.env.HIVE_WORKTREE_BASE = saved;
+  });
+
+  it("hive-worktrees 한 곳에 모으고 그 안에서 저장소로 나눈다", () => {
+    delete process.env.HIVE_WORKTREE_BASE;
+    expect(worktreeBasePath("/home/ed/src/hive")).toBe("/home/ed/src/hive-worktrees/hive");
+  });
+
+  it("저장소 이름이 무엇이든 담는 디렉토리 이름은 hive-worktrees다", () => {
+    delete process.env.HIVE_WORKTREE_BASE;
+    expect(worktreeBasePath("/src/positivehotel/ph-daybook")).toBe(
+      "/src/positivehotel/hive-worktrees/ph-daybook"
+    );
+  });
+
+  it("부모가 같은 저장소들은 한 hive-worktrees를 나눠 쓴다", () => {
+    delete process.env.HIVE_WORKTREE_BASE;
+    expect(worktreeBasePath("/src/positivehotel/samata")).toBe("/src/positivehotel/hive-worktrees/samata");
+  });
+
+  it("HIVE_WORKTREE_BASE로 자리를 바꿀 수 있다", () => {
+    process.env.HIVE_WORKTREE_BASE = "{repoParent}/wt/{repo}";
+    expect(worktreeBasePath("/home/ed/src/hive")).toBe("/home/ed/src/wt/hive");
   });
 });
