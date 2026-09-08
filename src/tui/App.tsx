@@ -16,6 +16,7 @@ import { basename } from "node:path";
 import { listWorktrees, resolveRepo, type RepoInfo } from "../git.js";
 import { buildRows,
   unreadUpdates, readWindowIds, resolvePaneAgents, type Row, type ViewMode } from "../model.js";
+import { fitSegments, statusSegments, STATUS_SEP } from "./statusbar.js";
 import {
   capturePaneTail,
   listPanes,
@@ -1145,13 +1146,6 @@ export function App(): React.JSX.Element {
         </Text>
       );
     }
-  } else {
-    footer.push(
-      <Text key="help" dimColor wrap="truncate-end">
-        ? help
-        {tail}
-      </Text>
-    );
   }
 
   // 프레임이 pane보다 길면 화면이 스크롤되고, 그때부터 ink는 지울 줄을 못 찾아 프레임을 계속
@@ -1173,23 +1167,41 @@ export function App(): React.JSX.Element {
   const visible = body.slice(start, start + budget);
   const above = start;
   const below = Math.max(0, body.length - start - budget);
-  const scrollHint = `${above > 0 ? ` ↑${above}` : ""}${below > 0 ? ` ↓${below}` : ""}`;
 
-  // 클릭 판정용. 0번은 머리글 줄이다.
-  lineRowsRef.current = [null, ...visible.map((l) => l.row)];
-  frameLinesRef.current = 1 + visible.length + shownFooter.length;
+  // 상태바는 목록 길이와 상관없이 pane 맨 아래에 있어야 눈이 한 자리만 보면 된다.
+  // 목록이 짧으면 그만큼 빈 줄로 밀어 내린다.
+  const filler = Math.max(0, budget - visible.length);
 
-  const abTag = ab === null ? "" : ab === "up" ? " ab●" : " ab✗";
+  // 클릭 판정용. 이제 목록이 프레임 첫 줄부터 시작한다.
+  lineRowsRef.current = visible.map((l) => l.row);
+  frameLinesRef.current = visible.length + filler + shownFooter.length + 1;
+
+  const segments = fitSegments(statusSegments({ mode, above, below, ab, showHelp }), width);
 
   return (
     <Box flexDirection="column" width="100%">
-      <Text bold wrap="truncate-end">
-        {clip(`sort: ${mode}${scrollHint}`, Math.max(0, width - stringWidth(abTag)))}
-        {abTag ? <Text color={ab === "up" ? undefined : "red"}>{abTag}</Text> : null}
+      {visible.map((l) => l.el)}
+      {/* 빈 문자열 <Text>는 ink가 줄로 세지 않는다(실측). 공백 한 칸을 넣어야 줄이 생긴다. */}
+      {Array.from({ length: filler }, (_, i) => (
+        <Text key={`filler:${i}`}>{" " + tail}</Text>
+      ))}
+      {shownFooter}
+      <Text wrap="truncate-end">
+        {segments.map((seg, i) => (
+          <Text key={seg.key}>
+            {i > 0 ? <Text dimColor>{STATUS_SEP}</Text> : null}
+            <Text
+              color={seg.color}
+              backgroundColor={seg.backgroundColor}
+              bold={seg.bold}
+              dimColor={seg.dim}
+            >
+              {seg.text}
+            </Text>
+          </Text>
+        ))}
         {tail}
       </Text>
-      {visible.map((l) => l.el)}
-      {shownFooter}
     </Box>
   );
 }
