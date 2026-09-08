@@ -97,6 +97,7 @@ bind W command-prompt -p "branch:" "run-shell -b \"<node> <cli.js> --pane '#{pan
 ```
 hive wt init-script [--repo <path>] [--force]   # <repo>/.hive/init.sh 템플릿 생성
 hive wt new <branch> [--repo <path>] [--base <ref>] [--no-init]
+hive wt pr <번호> [--repo <path>] [--no-init]
 hive wt open <branch|path|디렉토리이름> [--repo <path>] [--init]
 hive wt rm <branch|path|디렉토리이름> [--repo <path>] [--force]
 hive wt list [--repo <path>]
@@ -109,6 +110,14 @@ hive wt list [--repo <path>]
 세션을 새로 여는 건 `wt new`뿐입니다. 같은 세션 안에 손으로 window를 열어 다른 worktree에서 작업해도 사이드바는 그대로 잡습니다. 목록은 세션이 아니라 window 단위입니다.
 
 init script 실행 로그는 `~/.hive/logs/wt-<branch>.log`에 남습니다. init script가 실패해도 worktree와 세션은 그대로 유지되고 exit code만 알립니다.
+
+`wt pr`은 GitHub PR 하나를 worktree로 엽니다. `gh`로 PR 정보를 읽고 `git fetch origin +refs/pull/<번호>/head:<로컬브랜치>`로 받아온 뒤 `wt new`와 같은 모양으로 세션을 엽니다. 로컬 브랜치와 디렉토리 이름은 `pr-<번호>-<헤드브랜치>`입니다(헤드브랜치는 git 브랜치명에 쓸 수 있는 글자만 남기고 32자에서 자릅니다). 번호는 `12`도 `#12`도 됩니다.
+
+`refs/pull`을 쓰는 덕분에 fork에서 온 PR도 remote를 더하지 않고 같은 명령으로 받습니다. 대신 upstream이 안 붙어 **push는 안 됩니다**. 리뷰용입니다.
+
+이미 그 PR의 worktree가 있으면 받아오지 않고 `wt open`처럼 그 자리를 엽니다(`reused: true`). 열려 있는 브랜치로는 fetch가 거부되기도 하고, PR은 리뷰하다 나갔다 다시 들어오는 일이 잦습니다. 그래서 PR에 새 커밋이 올라와도 자동으로 따라가지 않습니다. 최신으로 맞추려면 그 worktree에서 직접 받거나 `D`로 지우고 다시 여세요.
+
+`gh`가 없거나, 인증이 안 됐거나, GitHub 저장소가 아니면 그 이유를 한 줄로 알려줍니다. hive가 대신 `gh auth login`을 해주지는 않습니다.
 
 `wt open`은 저장소에는 있지만 tmux에 안 떠 있는 worktree를 `wt new`와 같은 모양(세션 하나, 왼쪽 사이드바, 오른쪽 셸)으로 엽니다. 이미 열려 있으면 그 세션으로 옮기고 `alreadyOpen`을 돌려줍니다. 이미 있던 worktree는 의존성이 깔려 있다고 보고 init script를 기본으로 돌리지 않습니다(`--init`으로 돌립니다).
 

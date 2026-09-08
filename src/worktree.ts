@@ -70,6 +70,12 @@ export function createInitScript(opts: { repoRoot: string; force?: boolean }): C
   return { created: true, path };
 }
 
+// wtNew가 파는 자리와 "이미 있나" 판정이 어긋나면 있는 worktree를 또 만들려다 실패한다.
+// 규칙은 한 군데에만 둔다.
+export function worktreePathFor(repoRoot: string, branch: string): string {
+  return join(worktreeBasePath(repoRoot), branch.replaceAll("/", "-"));
+}
+
 export interface WtNewOptions {
   branch: string;
   repo?: string;
@@ -102,7 +108,7 @@ export function wtNew(opts: WtNewOptions): WtNewResult {
   const repoRoot = repo.repoRoot;
 
   const safeBranch = opts.branch.replaceAll("/", "-");
-  const path = join(worktreeBasePath(repoRoot), safeBranch);
+  const path = worktreePathFor(repoRoot, opts.branch);
   if (existsSync(path)) throw new Error(`이미 존재하는 경로입니다: ${path}`);
 
   worktreeAdd({ repoRoot, branch: opts.branch, path, base: opts.base });

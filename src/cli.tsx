@@ -45,6 +45,7 @@ import {
   wtRemove,
   wtRunInit,
 } from "./worktree.js";
+import { ghErrorMessage, parsePrNumber, viewPullRequest, wtFromPr } from "./githubPr.js";
 import { resolveRepo } from "./git.js";
 import { abConfigPath, abLocalInstalled, parseAbConfig, probeAbBridge } from "./abBridge.js";
 import { claudeSnapshotPath, readClaudeUsage, readCodexUsage } from "./usage.js";
@@ -214,6 +215,24 @@ wt
   .action((target, opts) => {
     const result = wtOpen({ repo: opts.repo, target, init: opts.init });
     console.log(JSON.stringify(result, null, 2));
+  });
+wt
+  .command("pr <number>")
+  .description("GitHub PR을 받아 worktree로 열기 (이미 있으면 그 자리를 연다)")
+  .option("--repo <path>", "저장소 경로 (기본: 현재 디렉토리)")
+  .option("--no-init", "init script 실행 건너뛰기")
+  .action((number, opts) => {
+    const repoRoot = resolveRepoRoot(opts.repo);
+    const prNumber = parsePrNumber(number);
+    let pr;
+    try {
+      pr = viewPullRequest(repoRoot, prNumber);
+    } catch (err) {
+      // gh의 원본 stderr는 여러 줄이라 CLI 한 줄 에러로 줄여서 올린다.
+      throw new Error(ghErrorMessage(err));
+    }
+    const result = wtFromPr({ repoRoot, pr, noInit: !opts.init });
+    console.log(JSON.stringify({ ...result, number: pr.number, title: pr.title }, null, 2));
   });
 wt
   .command("rm <target>")
