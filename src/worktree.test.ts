@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +10,7 @@ import {
   windowsInWorktree,
   wtRemove,
   type WtRemovePlan,
+  worktreePathFor,
 } from "./worktree.js";
 import { worktreeRemove, type WorktreeEntry } from "./git.js";
 import { killWindow, listPanes, switchClient, type PaneInfo } from "./tmux.js";
@@ -261,5 +262,27 @@ describe("wtRemove", () => {
     expect(beforeKill).not.toHaveBeenCalled();
     expect(killWindow).not.toHaveBeenCalled();
     expect(result.skippedReason).toBeDefined();
+  });
+});
+
+describe("worktreePathFor", () => {
+  const saved = process.env.HIVE_WORKTREE_BASE;
+  afterEach(() => {
+    if (saved === undefined) delete process.env.HIVE_WORKTREE_BASE;
+    else process.env.HIVE_WORKTREE_BASE = saved;
+  });
+
+  it("worktree base 아래 브랜치 이름으로 경로를 만든다", () => {
+    delete process.env.HIVE_WORKTREE_BASE;
+    expect(worktreePathFor("/home/ed/src/hive", "github-pr")).toBe(
+      "/home/ed/src/hive-worktrees/hive/github-pr",
+    );
+  });
+
+  it("브랜치의 슬래시는 디렉토리 이름에서 하이픈이 된다", () => {
+    delete process.env.HIVE_WORKTREE_BASE;
+    expect(worktreePathFor("/home/ed/src/hive", "feature/login")).toBe(
+      "/home/ed/src/hive-worktrees/hive/feature-login",
+    );
   });
 });

@@ -42,6 +42,13 @@ import {
   type WtRemovePlan,
 } from "../worktree.js";
 import { collapseHome, listDirCandidates, sliceStart, type DirCandidate } from "../pathPicker.js";
+import {
+  ghErrorMessage,
+  listPullRequests,
+  prLabel,
+  wtFromPr,
+  type PullRequest,
+} from "../githubPr.js";
 import { jumpIndex, jumpLabel, jumpLabelWidth, JUMP_PREFIX } from "../jump.js";
 import {
   abConfigPath,
@@ -58,16 +65,20 @@ const SCREEN_CHECK_MS = 3000;
 const SCREEN_TAIL_LINES = 25;
 const REPO_CANDIDATE_MAX = 8;
 const AB_PROBE_MS = 30_000;
+// PR은 30개까지 받아오는데 footer는 잘려 나가므로 repoInput처럼 창을 내어 보여준다.
+const PR_CANDIDATE_MAX = 8;
 const USAGE_REFRESH_MS = 30_000;
 
 /**
  * path가 없으면 "그 저장소에 새 worktree 만들기" 항목이고,
  * repoRoot까지 없으면 "hive가 모르는 저장소를 경로로 찾기" 항목이다.
+ * pr이 붙으면 그 저장소의 PR 목록으로 넘어가는 항목이다.
  */
 interface PickerItem {
   label: string;
   repoRoot?: string;
   path?: string;
+  pr?: true;
 }
 
 const STATE_ICON: Record<AgentState, string> = {
@@ -112,6 +123,7 @@ const HELP_LINES = [
   "g      recent/group",
   "n      worktree 생성",
   "o      worktree 열기 / 저장소 찾기",
+  "p      PR 골라서 worktree로",
   "D      worktree 삭제",
   "u      사용량 보기",
   "r      새로고침",
@@ -179,6 +191,14 @@ export function App(): React.JSX.Element {
   const [confirm, setConfirm] = useState<{ plan: WtRemovePlan; input: string } | null>(null);
   const [picker, setPicker] = useState<{ items: PickerItem[]; cursor: number } | null>(null);
   const [repoInput, setRepoInput] = useState<{ text: string; cursor: number } | null>(null);
+  // prs가 null이면 gh를 기다리는 중이다. 목록 조회는 이 화면에서 유일한 네트워크 호출이라
+  // 동기로 부르면 그동안 사이드바가 통째로 멈춘다.
+  const [prPicker, setPrPicker] = useState<{
+    repoRoot: string;
+    prs: PullRequest[] | null;
+    cursor: number;
+    error?: string;
+  } | null>(null);
   // 열 번째 이후 행으로 가려고 사용자가 쌓아 둔 접두사(l, ll, …)의 길이.
   const [jumpPrefix, setJumpPrefix] = useState(0);
   const [ab, setAb] = useState<AbStatus | null>(null);
@@ -524,6 +544,7 @@ export function App(): React.JSX.Element {
         });
       }
       items.push({ label: `${basename(repo)}: + 새 worktree`, repoRoot: repo });
+      items.push({ label: `${basename(repo)}: + PR에서 열기`, repoRoot: repo, pr: true });
     }
     // hive가 아직 모르는 저장소로 가는 유일한 입구다. 아는 저장소가 없어도 이 항목은 남는다.
     items.push({ label: "+ 다른 저장소 찾기…" });
@@ -531,12 +552,45 @@ export function App(): React.JSX.Element {
     setPicker({ items, cursor: 0 });
   }, [windowRows]);
 
+  const openPrPicker = useCallback((repoRoot: string) => {
+    setJumpPrefix(0);
+    setPrPicker({ repoRoot, prs: null, cursor: 0 });
+    // 기다리는 사이 사용자가 Esc를 눌렀거나 다른 저장소를 열었을 수 있다. 그때 도착한 응답이
+    // 화면을 되살리지 않도록 지금 보고 있는 저장소일 때만 채운다.
+    const fill = (patch: { prs: PullRequest[]; error?: string }): void => {
+      setPrPicker((cur) => (cur && cur.repoRoot === repoRoot ? { ...cur, ...patch } : cur));
+    };
+    listPullRequests(repoRoot)
+      .then((prs) => fill({ prs }))
+      .catch((err) => fill({ prs: [], error: ghErrorMessage(err) }));
+  }, []);
+
+  const choosePr = useCallback((repoRoot: string, pr: PullRequest | undefined) => {
+    setPrPicker(null);
+    setJumpPrefix(0);
+    if (!pr) return;
+    try {
+      const result = wtFromPr({ repoRoot, pr });
+      setStatusMsg(
+        result.alreadyOpen
+          ? `이미 열려 있음: ${result.alreadyOpen}`
+          : `#${pr.number}: ${result.branch}`
+      );
+    } catch (err) {
+      setStatusMsg(err instanceof Error ? err.message : String(err));
+    }
+  }, []);
+
   const choosePicker = useCallback((item: PickerItem | undefined) => {
     setPicker(null);
     setJumpPrefix(0);
     if (!item) return;
     if (!item.repoRoot) {
       setRepoInput({ text: "~/", cursor: 0 });
+      return;
+    }
+    if (item.pr) {
+      openPrPicker(item.repoRoot);
       return;
     }
     if (!item.path) {
@@ -550,7 +604,7 @@ export function App(): React.JSX.Element {
     } catch (err) {
       setStatusMsg(err instanceof Error ? err.message : String(err));
     }
-  }, []);
+  }, [openPrPicker]);
 
   // 한 단계만 readdir하므로 입력이 바뀔 때만 다시 읽으면 충분하다.
   const repoCandidates = useMemo<DirCandidate[]>(
@@ -635,7 +689,12 @@ export function App(): React.JSX.Element {
     mouseDepsRef.current = {
       moveSelection,
       activateRow,
-      modalOpen: confirm !== null || picker !== null || branchInput !== null || repoInput !== null,
+      modalOpen:
+        confirm !== null ||
+        picker !== null ||
+        branchInput !== null ||
+        repoInput !== null ||
+        prPicker !== null,
     };
   });
 
@@ -725,6 +784,25 @@ export function App(): React.JSX.Element {
       return;
     }
 
+    if (prPicker !== null) {
+      const prs = prPicker.prs;
+      // 아직 못 받았거나 고를 게 없으면 옮길 커서도 없다. 그래도 다른 키는 삼켜야
+      // 가려진 목록이 뒤에서 움직이지 않는다.
+      if (key.escape) setPrPicker(null);
+      else if (prs === null || prs.length === 0) {
+        if (jumpPrefix > 0) setJumpPrefix(0);
+      } else if (input === "j" || key.downArrow)
+        setPrPicker((p) => (p ? { ...p, cursor: (p.cursor + 1) % prs.length } : p));
+      else if (input === "k" || key.upArrow)
+        setPrPicker((p) => (p ? { ...p, cursor: (p.cursor - 1 + prs.length) % prs.length } : p));
+      else if (input === JUMP_PREFIX && !key.ctrl) setJumpPrefix((n) => n + 1);
+      else if (/^[1-9]$/.test(input))
+        choosePr(prPicker.repoRoot, prs[jumpIndex(jumpPrefix, Number(input))]);
+      else if (key.return) choosePr(prPicker.repoRoot, prs[prPicker.cursor]);
+      else if (jumpPrefix > 0) setJumpPrefix(0);
+      return;
+    }
+
     // 타이핑으로 걸러야 해서 j/k를 커서로 못 쓴다. 방향키와 Tab, Ctrl-n/p로 옮긴다.
     if (repoInput !== null) {
       const count = repoCandidates.length;
@@ -780,6 +858,12 @@ export function App(): React.JSX.Element {
     else if (input === "r") void tick();
     else if (input === "n") setBranchInput("");
     else if (input === "o") openPicker();
+    else if (input === "p") {
+      // worktree 안에서 눌러도 PR은 저장소 쪽에서 받아온다.
+      const repo = actionRow?.repoRoot;
+      if (repo) openPrPicker(repo);
+      else setStatusMsg("저장소를 알 수 없습니다");
+    }
     else if (input === "D") startRemove();
     else if (input === "u") setShowUsage((v) => !v);
     else if (input === "?") setShowHelp((v) => !v);
@@ -939,6 +1023,46 @@ export function App(): React.JSX.Element {
         </Text>
       );
     });
+  }
+  if (prPicker !== null) {
+    footer.push(
+      <Text key="pr" wrap="truncate-end">
+        {clip(`PR ${basename(prPicker.repoRoot)} (j/k Enter, Esc 취소)`, width) + tail}
+      </Text>
+    );
+    if (prPicker.error) {
+      footer.push(
+        <Text key="pr:error" color="red" wrap="truncate-end">
+          {clip(`  ${prPicker.error}`, width - 1) + tail}
+        </Text>
+      );
+    } else if (prPicker.prs === null) {
+      footer.push(
+        <Text key="pr:loading" dimColor wrap="truncate-end">
+          {clip("  gh에 물어보는 중…", width - 1) + tail}
+        </Text>
+      );
+    } else if (prPicker.prs.length === 0) {
+      footer.push(
+        <Text key="pr:none" dimColor wrap="truncate-end">
+          {clip("  열린 PR이 없습니다 (Esc 취소)", width - 1) + tail}
+        </Text>
+      );
+    } else {
+      const prJumpWidth = jumpLabelWidth(prPicker.prs.length);
+      const from = sliceStart(prPicker.cursor, prPicker.prs.length, PR_CANDIDATE_MAX);
+      for (const [offset, pr] of prPicker.prs.slice(from, from + PR_CANDIDATE_MAX).entries()) {
+        const index = from + offset;
+        const selected = index === prPicker.cursor;
+        const num = jumpLabel(index).padStart(prJumpWidth);
+        footer.push(
+          <Text key={`pr:${pr.number}`} wrap="truncate-end">
+            <Text color={selected ? SELECT_COLOR : undefined}>{selected ? BAR : " "}</Text>
+            <Text dimColor={!selected}>{clip(`${num} ${prLabel(pr)}`, width - 1) + tail}</Text>
+          </Text>
+        );
+      }
+    }
   }
   if (jumpPrefix > 0) {
     footer.push(
