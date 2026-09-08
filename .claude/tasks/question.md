@@ -8,30 +8,32 @@
 
 ---
 
-## 1. 반드시 손봐야 동작하는 것 하나
+## 1. 설정 한 줄을 넣으셔야 Claude 사용량이 보입니다
 
-### Claude 사용량은 설정 한 줄이 있어야 보입니다
+`u` 키로 여는 사용량 뷰에서 **Codex 값은 바로 보이지만 Claude 값은 안 보입니다.**
 
-`u` 키로 여는 사용량 뷰에서 **Codex 값은 바로 보이지만 Claude 값은 "스냅샷 없음"으로 뜹니다.**
+Claude Code는 5시간·주간 사용률을 statusLine 프로세스에만 넘깁니다. hook payload에도
+트랜스크립트에도 없습니다(실제 이벤트 1503건과 트랜스크립트를 뒤져 확인했습니다).
+그래서 hive가 그 값을 받으려면 **hive 자신이 statusLine이 되는 수밖에** 없습니다.
 
-이유는 Claude Code가 5시간·주간 사용률을 statusLine 프로세스에만 넘기기 때문입니다. hook
-payload에는 없습니다(실제 이벤트 1503건 중 0건 확인). 지금 그 값을 받고 있는 건 statusLine에
-걸린 claude-hud뿐입니다.
+원래는 claude-hud가 내보내는 스냅샷을 읽게 만들었는데, "hud에 의존하면 의도와 안 맞다"고
+하셔서 hive가 직접 받도록 다시 만들었습니다. 지금 쓰시는 HUD는 그대로 두고 감싸기만 하면
+됩니다. `~/.claude/settings.json`의 `statusLine.command`를 이렇게 바꾸시면 됩니다.
 
-claude-hud에 그 값을 파일로 내보내는 기능이 이미 있습니다. `~/.claude/plugins/claude-hud/config.json`의
-`display`에 아래 한 줄을 넣으시면 됩니다.
-
-```json
-"externalUsageWritePath": "/home/ed/.hive/claude-usage.json"
+```
+hive statusline --exec '<지금 그 자리에 있는 명령 전체>'
 ```
 
-`showUsage`는 false여도 됩니다. hive가 남의 설정을 말없이 고치면 안 된다고 봐서 제가 넣지
-않았습니다. **넣어도 되는지가 첫 번째 질문입니다.** 원하시면 제가 넣겠습니다.
+hive가 stdin을 읽어 사용량만 자기 파일로 저장하고, 원문을 감싼 명령에 그대로 넘겨 출력을
+흘려보냅니다. HUD 화면은 달라지지 않습니다. 절대경로가 필요하면 `hive paths`로 확인하십시오.
 
-다른 방법도 봤지만 다 막혔습니다. 트랜스크립트에는 창 사용률이 없고(토큰만 있습니다),
-인증 토큰으로 API를 부르는 건 비공식이고 자격증명을 건드립니다.
+**제가 `settings.json`을 건드리지 않았습니다.** 사용자님 상태줄이라 직접 정하실 일입니다.
+넣어도 되면 제가 넣겠습니다.
 
----
+주의할 것이 하나 있습니다. **실제 Claude Code에 등록해서 도는 것은 확인하지 못했습니다.**
+statusLine payload는 문서화된 스키마대로 손으로 만든 JSON으로 검증했습니다. 실제 값의 필드
+이름이 다르면 등록 후에야 드러납니다. 등록하시고 `u`를 눌렀을 때 여전히 "스냅샷 없음"이면
+`hive usage`를 쳐서 원본을 보시면 됩니다.
 
 ## 2. 취향에 가까운 결정들
 
