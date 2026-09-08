@@ -210,6 +210,10 @@ export function selectPane(paneId: string): void {
   tmux(["select-pane", "-t", paneId]);
 }
 
+export function resizePaneWidth(paneId: string, width: number): void {
+  tmux(["resize-pane", "-t", paneId, "-x", String(width)]);
+}
+
 export function capturePaneTail(paneId: string, lines: number): string {
   try {
     return tmux(["capture-pane", "-p", "-t", paneId, "-S", `-${lines}`]);
@@ -243,13 +247,33 @@ export interface NewSessionResult {
   windowId: string;
 }
 
-export function newSession(opts: { name: string; cwd: string; command: string }): NewSessionResult {
+export interface TermSize {
+  width: number;
+  height: number;
+}
+
+// 클라이언트가 붙어 있지 않은 세션은 default-size(기본 80x24)로 만들어진다. 나중에 클라이언트가 붙어
+// 크기가 커지면 tmux가 pane 폭을 비율로 늘리기 때문에, 그 전에 나눠 둔 사이드바가 같이 부풀어 오른다(실측).
+// 그래서 새 세션은 처음부터 지금 보고 있는 window와 같은 크기로 만든다.
+export function windowSize(target: string): TermSize | undefined {
+  try {
+    const out = tmux(["display-message", "-p", "-t", target, "#{window_width}\t#{window_height}"]).trim();
+    const [width, height] = out.split("\t").map(Number);
+    if (!width || !height) return undefined;
+    return { width, height };
+  } catch {
+    return undefined;
+  }
+}
+
+export function newSession(opts: { name: string; cwd: string; command: string; size?: TermSize }): NewSessionResult {
   const out = tmux([
     "new-session",
     "-d",
     "-P",
     "-F",
     "#{session_name}\t#{window_id}",
+    ...(opts.size ? ["-x", String(opts.size.width), "-y", String(opts.size.height)] : []),
     "-s",
     opts.name,
     // 세션 이름만 주면 첫 window 이름이 실행 명령(zsh)이 되어 사이드바에 브랜치가 안 보인다.

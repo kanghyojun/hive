@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildRows, resolvePaneAgents, type Row } from "./model.js";
+import { buildRows, resolvePaneAgents, unreadUpdates, type Row } from "./model.js";
 import type { AgentRecord } from "./state.js";
 import type { PaneInfo } from "./tmux.js";
 import type { RepoInfo } from "./git.js";
@@ -549,5 +549,93 @@ describe("codex pane", () => {
 
   it("agent가 아닌 셸 pane뿐인 window는 목록에서 뺀다", () => {
     expect(windowRows(rowsFor("zsh"))).toHaveLength(0);
+  });
+});
+
+describe("unreadUpdates", () => {
+  function row(overrides: Partial<Row>): Row {
+    return {
+      kind: "window",
+      key: overrides.windowId ?? "@1",
+      sessionName: "s",
+      windowId: overrides.windowId ?? "@1",
+      windowIndex: "1",
+      name: "w",
+      autoName: false,
+      cwd: "/repo",
+      repoLabel: "repo",
+      worktreeLabel: "repo",
+      state: "done",
+      source: "hook",
+      agentPaneId: "%1",
+      prompt: null,
+      title: null,
+      liveTitle: null,
+      lastInputTs: 0,
+      lastInputIsFallback: false,
+      sleep: false,
+      unread: false,
+      active: false,
+      depth: 0,
+      ...overrides,
+    };
+  }
+
+  it("처음 보는 창이 done이면 안 읽음을 켠다", () => {
+    const out = unreadUpdates({
+      rows: [row({ windowId: "@1", state: "done" })],
+      seenStates: new Map(),
+      currentWindowId: null,
+    });
+    expect(out).toEqual([{ windowId: "@1", seenState: "done", unread: true }]);
+  });
+
+  it("본 상태 그대로면 아무것도 돌려주지 않는다", () => {
+    const out = unreadUpdates({
+      rows: [row({ windowId: "@1", state: "done" })],
+      seenStates: new Map([["@1", "done"]]),
+      currentWindowId: null,
+    });
+    expect(out).toEqual([]);
+  });
+
+  it("working이나 idle로 바뀌면 본 상태만 갱신하고 안 읽음은 안 켠다", () => {
+    const out = unreadUpdates({
+      rows: [row({ windowId: "@1", state: "working" }), row({ windowId: "@2", state: "idle" })],
+      seenStates: new Map([
+        ["@1", "done"],
+        ["@2", "working"],
+      ]),
+      currentWindowId: null,
+    });
+    expect(out.map((u) => u.unread)).toEqual([false, false]);
+    expect(out.map((u) => u.seenState)).toEqual(["working", "idle"]);
+  });
+
+  it("지금 보고 있는 창은 done이 돼도 안 읽음을 안 켠다", () => {
+    const out = unreadUpdates({
+      rows: [row({ windowId: "@1", state: "done" })],
+      seenStates: new Map([["@1", "working"]]),
+      currentWindowId: "@1",
+    });
+    expect(out).toEqual([{ windowId: "@1", seenState: "done", unread: false }]);
+  });
+
+  it("done에서 waiting으로 넘어가면 다시 켠다", () => {
+    const out = unreadUpdates({
+      rows: [row({ windowId: "@1", state: "waiting" })],
+      seenStates: new Map([["@1", "done"]]),
+      currentWindowId: null,
+    });
+    expect(out).toEqual([{ windowId: "@1", seenState: "waiting", unread: true }]);
+  });
+
+  it("머리글 행은 건너뛴다", () => {
+    const out = unreadUpdates({
+      rows: [row({ kind: "group", windowId: "", state: "done" })],
+      seenStates: new Map(),
+      currentWindowId: null,
+    });
+    expect(out).toEqual([]);
   });
 });

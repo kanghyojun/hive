@@ -14,7 +14,11 @@ hive에서 tmux window 하나가 스레드 하나입니다. 사이드바의 한 
 - `idle`(·): `SessionEnd`가 오거나, 마지막 이벤트로부터 30분이 지나면.
 - `unknown`(◌): hook 이벤트가 하나도 없는데 pane에 에이전트가 떠 있으면.
 
-sleep(`s` 키)은 표시 전용입니다. 이벤트 흡수와 상태 계산은 계속하지만 화면에서는 어둡게(dimColor) 표시하고 목록 맨 아래로 내립니다.
+sleep(`s` 키)은 표시 전용입니다. 이벤트 흡수와 상태 계산은 계속하지만 화면에서는 어둡게(dimColor) 표시하고 목록 맨 아래로 내립니다. 자는 창으로 직접 들어가면(Enter, 숫자, 클릭) sleep이 풀립니다. 보고 있는 창이 목록 맨 아래 어두운 자리에 남아 있을 이유가 없습니다.
+
+안 읽음 표시는 "상태가 바뀐 걸 내가 봤는가"를 남깁니다. 창이 `done`이나 `waiting`으로 바뀌면 그 행 오른쪽 끝에 막대(`▐`)가 붙습니다. 이 두 상태만 잡는 이유는 나머지가 부름이 아니라 진행 상황이기 때문입니다. working 시작이나 idle 전환에는 붙지 않습니다. 막대는 그 창에 들어가면(Enter, 숫자, 클릭) 사라지고, 지금 보고 있는 창은 눈앞에서 바뀐 것이라 애초에 붙지 않습니다. `m`으로 직접 켜고 끌 수 있습니다. 지금은 볼 여유가 없어 표시를 남겨두거나, 들어가지 않고 표시만 지울 때 씁니다.
+
+같은 상태가 이어지는 동안에는 다시 켜지지 않습니다. 마지막으로 본 상태를 `~/.hive/hive.db`의 `window_flags.seen_state`에 적어두고 그것과 달라질 때만 켭니다.
 
 두 보기 모드(`g` 키로 전환)가 있습니다. `recent`는 최근 입력순 단일 목록이고, `group`은 저장소(repoRoot) → worktree 순으로 묶은 목록입니다. 마지막으로 고른 모드는 `~/.hive/ui.json`에 저장됩니다.
 
@@ -75,8 +79,9 @@ bind W command-prompt -p "branch:" "run-shell -b \"<node> <cli.js> --pane '#{pan
 사이드바 TUI 안에서:
 
 - `j`/`k`/↑/↓: 행 이동
-- `Enter`: 선택한 window로 이동 (사이드바는 그 window를 따라옵니다)
+- `Enter`: 선택한 window로 이동 (사이드바는 그 window를 따라옵니다). 자는 창이면 sleep이 풀리고, 안 읽음 표시도 지워집니다
 - `s`: 선택한 window sleep 토글
+- `m`: 선택한 window 안 읽음 토글
 - `g`: `recent`/`group` 보기 전환
 - `n`: branch 이름 입력 후 그 저장소에 `wt new` 실행 (새 세션이 열리고 그리로 이동합니다)
 - `o`: 안 열린 worktree 목록에서 골라 열기. 아는 저장소마다 "+ 새 worktree" 항목이 있어 그 자리에서 `n`과 같은 입력줄로 넘어갑니다. 맨 아래 "+ 다른 저장소 찾기…"는 hive가 아직 모르는 저장소로 가는 입구입니다. `~/`부터 시작하는 입력줄에 경로를 치면 한 단계씩 하위 디렉토리를 fuzzy로 걸러 보여주고(↑/↓·Tab·Ctrl-n/p로 커서, Esc 취소), `● git`으로 표시된 저장소에서 Enter를 누르면 브랜치 입력줄로 넘어가 그 자리에서 worktree와 세션을 새로 만듭니다. 한 번 쓴 저장소는 `~/.hive/repos.json`에 적혀 다음부터는 목록에 바로 뜹니다
@@ -96,6 +101,8 @@ hive wt open <branch|path|디렉토리이름> [--repo <path>] [--init]
 hive wt rm <branch|path|디렉토리이름> [--repo <path>] [--force]
 hive wt list [--repo <path>]
 ```
+
+`wt new`가 여는 세션은 지금 보고 있는 window와 같은 크기로 만듭니다. 크기를 안 주면 tmux가 `default-size`(80x24)나 마지막 클라이언트 크기로 세션을 만들고, 나중에 클라이언트가 붙을 때 pane을 비율로 늘려 사이드바가 화면 절반을 차지합니다.
 
 `wt new`는 `HIVE_WORKTREE_BASE` 아래에 git worktree를 만들고, init script(`HIVE_INIT_SCRIPT` env > `<repo>/.hive/init.sh` 순으로 찾음)를 실행한 뒤, **tmux 세션을 하나 새로 엽니다**(왼쪽 쓰레드뷰, 오른쪽 init 로그 → 셸). worktree 하나가 세션 하나입니다. 세션 이름은 브랜치명이고(`/`, `.`, `:`, 공백은 `-`로 바꿉니다), 같은 이름이 이미 있으면 `-2`, `-3`을 붙입니다. 세션을 만든 뒤에는 붙어 있는 클라이언트를 그 세션으로 옮깁니다(`switched: false`면 옮길 클라이언트가 없었다는 뜻이고, 세션은 그대로 만들어져 있습니다).
 
@@ -166,5 +173,5 @@ hive usage    # 두 출처에서 읽은 원본과 스냅샷 경로 확인
 - 마우스 클릭 좌표가 pane 기준인지는 사람이 실제로 클릭해서 확인해야 합니다(자동 검증 범위 밖).
 - 다른 tmux 세션의 window로는 목록에 보이되 dim 처리되고, 이동 시 `switch-client`를 시도합니다만 이 경로는 실사용에서 충분히 검증되지 않았습니다.
 - codex를 npm 래퍼로 설치하면 `#{pane_current_command}`가 `node`로 나옵니다(실측). 그래서 3초마다 `ps`로 pane 하위 프로세스를 훑어 `claude`/`codex`를 찾습니다. 한 pane에서 claude가 codex를 자식으로 돌리면 얕은 쪽인 claude로 표시됩니다.
-- 사이드바 폭은 41칸으로 고정입니다(`src/sidebar.ts`의 `SIDEBAR_WIDTH`). pane 크기를 수동으로 바꿔도 다음 window 이동에서 41로 돌아옵니다.
+- 사이드바 폭은 41칸으로 고정입니다(`src/sidebar.ts`의 `SIDEBAR_WIDTH`). tmux는 window 크기가 바뀌면 pane을 비율로 다시 나누기 때문에, 크기가 다른 클라이언트가 오가면 이 폭이 27칸이나 78칸으로 벌어집니다. TUI가 자기 폭을 보고 어긋나면 1초 안에 41로 되돌립니다. 그래서 pane 크기를 수동으로 바꿔도 유지되지 않습니다. 창이 좁아 41칸을 못 주면 되돌리기를 포기하고 다음 크기 변화까지 그대로 둡니다.
 - transcript tail, OSC 타이틀 파싱, 알림, 원격 접근, 멀티 머신 동기화, 테마, CI, 배포는 이번 프로토타입 범위 밖입니다.
