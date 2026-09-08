@@ -139,30 +139,43 @@ export function defaultHookFilePath(agent: AgentKind): string {
 
 // codex는 hooks.json에 적힌 hook을 그냥 실행하지 않는다. config.toml의
 // [hooks.state."<hooks.json 경로>:<event(snake_case)>:<그룹 index>:<hook index>"] 에
-// enabled = true 와 trusted_hash 가 있어야 돈다. 승인은 codex TUI에서 사용자가 한다.
+// trusted_hash 가 있어야 돈다. 승인은 codex TUI에서 사용자가 한다.
+// enabled 는 없으면 켜진 것으로 본다. codex가 trust 승인 시 trusted_hash만 쓰고
+// enabled 는 사용자가 hook을 끌 때만 false로 적기 때문이다(실측).
 export function codexStateKey(hooksPath: string, event: string, groupIndex: number, hookIndex: number): string {
   const snake = event.replace(/([a-z0-9])([A-Z])/g, "$1_$2").toLowerCase();
   return `${hooksPath}:${snake}:${groupIndex}:${hookIndex}`;
 }
 
-// TOML 파서를 의존성으로 들이지 않고 [hooks.state."..."] 섹션의 enabled만 읽는다.
+// TOML 파서를 의존성으로 들이지 않고 [hooks.state."..."] 섹션의 trusted_hash와 enabled만 읽는다.
 export function parseCodexHookState(toml: string): Map<string, boolean> {
   const state = new Map<string, boolean>();
   let current: string | null = null;
+  let hasHash = false;
+  let disabled = false;
+  const flush = (): void => {
+    if (current) state.set(current, hasHash && !disabled);
+  };
   for (const raw of toml.split("\n")) {
     const line = raw.trim();
     const header = /^\[hooks\.state\."(.*)"\]$/.exec(line);
     if (header) {
+      flush();
       current = header[1];
-      if (!state.has(current)) state.set(current, false);
+      hasHash = false;
+      disabled = false;
       continue;
     }
     if (line.startsWith("[")) {
+      flush();
       current = null;
       continue;
     }
-    if (current && /^enabled\s*=\s*true\b/.test(line)) state.set(current, true);
+    if (!current) continue;
+    if (/^trusted_hash\s*=/.test(line)) hasHash = true;
+    if (/^enabled\s*=\s*false\b/.test(line)) disabled = true;
   }
+  flush();
   return state;
 }
 

@@ -147,7 +147,7 @@ describe("codex hooks", () => {
     expect(codexStateKey(HOOKS_PATH, "UserPromptSubmit", 1, 2)).toBe(`${HOOKS_PATH}:user_prompt_submit:1:2`);
   });
 
-  it("config.toml의 hooks.state에서 enabled만 읽는다", () => {
+  it("config.toml의 hooks.state에서 trusted_hash와 enabled를 읽는다", () => {
     const toml = [
       `model = "gpt-6-astra"`,
       `[hooks.state]`,
@@ -159,15 +159,26 @@ describe("codex hooks", () => {
       `[hooks.state."${HOOKS_PATH}:stop:0:0"]`,
       `trusted_hash = "sha256:def"`,
       ``,
+      `[hooks.state."${HOOKS_PATH}:session_end:0:0"]`,
+      `enabled = false`,
+      `trusted_hash = "sha256:ghi"`,
+      ``,
+      `[hooks.state."${HOOKS_PATH}:interrupt:0:0"]`,
+      `enabled = true`,
+      ``,
       `[tui]`,
       `enabled = true`,
     ].join("\n");
     const state = parseCodexHookState(toml);
     expect(state.get(`${HOOKS_PATH}:pre_tool_use:0:0`)).toBe(true);
-    // 승인 해시만 있고 enabled가 없으면 아직 켜진 게 아니다.
-    expect(state.get(`${HOOKS_PATH}:stop:0:0`)).toBe(false);
+    // codex는 trust 승인 시 trusted_hash만 적는다. enabled가 없어도 켜진 것이다.
+    expect(state.get(`${HOOKS_PATH}:stop:0:0`)).toBe(true);
+    // 사용자가 끈 hook은 해시가 있어도 꺼진 것이다.
+    expect(state.get(`${HOOKS_PATH}:session_end:0:0`)).toBe(false);
+    // 승인 해시가 없으면 아직 신뢰 전이다.
+    expect(state.get(`${HOOKS_PATH}:interrupt:0:0`)).toBe(false);
     // [tui] 섹션의 enabled가 직전 hook 상태로 새면 안 된다.
-    expect(state.size).toBe(2);
+    expect(state.size).toBe(4);
   });
 });
 
@@ -202,7 +213,7 @@ describe("installHooks / statusHooks (codex 파일 왕복)", () => {
 
     installHooks({ agents: ["codex"], codexHooksPath: hooksPath });
     // 신뢰 키의 그룹/항목 index는 hooks.json에 실제로 쓰인 위치를 따른다.
-    writeFileSync(configPath, `[hooks.state."${hooksPath}:session_start:0:0"]\nenabled = true\n`);
+    writeFileSync(configPath, `[hooks.state."${hooksPath}:session_start:0:0"]\ntrusted_hash = "sha256:abc"\n`);
 
     const rows = statusHooks({ agents: ["codex"], codexHooksPath: hooksPath, codexConfigPath: configPath });
     expect(rows.find((r) => r.event === "SessionStart")?.trusted).toBe(true);
