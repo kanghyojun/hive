@@ -16,6 +16,10 @@ hive에서 tmux window 하나가 스레드 하나입니다. 사이드바의 한 
 
 sleep(`s` 키)은 표시 전용입니다. 이벤트 흡수와 상태 계산은 계속하지만 화면에서는 어둡게(dimColor) 표시하고 목록 맨 아래로 내립니다. 자는 창으로 직접 들어가면(Enter, 숫자, 클릭) sleep이 풀립니다. 보고 있는 창이 목록 맨 아래 어두운 자리에 남아 있을 이유가 없습니다.
 
+안 읽음 표시는 "상태가 바뀐 걸 내가 봤는가"를 남깁니다. 창이 `done`이나 `waiting`으로 바뀌면 그 행 오른쪽 끝에 막대(`▐`)가 붙습니다. 이 두 상태만 잡는 이유는 나머지가 부름이 아니라 진행 상황이기 때문입니다. working 시작이나 idle 전환에는 붙지 않습니다. 막대는 그 창에 들어가면(Enter, 숫자, 클릭) 사라지고, 지금 보고 있는 창은 눈앞에서 바뀐 것이라 애초에 붙지 않습니다. `m`으로 직접 켜고 끌 수 있습니다. 지금은 볼 여유가 없어 표시를 남겨두거나, 들어가지 않고 표시만 지울 때 씁니다.
+
+같은 상태가 이어지는 동안에는 다시 켜지지 않습니다. 마지막으로 본 상태를 `~/.hive/hive.db`의 `window_flags.seen_state`에 적어두고 그것과 달라질 때만 켭니다.
+
 두 보기 모드(`g` 키로 전환)가 있습니다. `recent`는 최근 입력순 단일 목록이고, `group`은 저장소(repoRoot) → worktree 순으로 묶은 목록입니다. 마지막으로 고른 모드는 `~/.hive/ui.json`에 저장됩니다.
 
 사이드바가 window를 따라다니는 원리는 tmux 자체 기능입니다. `hive sidebar show`가 사이드바 pane 하나를 만들고 그 id를 세션 옵션에 저장한 뒤, 세션에 `session-window-changed` hook을 걸어 둡니다. 이후 어떤 방법으로든 활성 window가 바뀌면 이 hook이 `join-pane`으로 사이드바 pane을 새 window의 왼쪽으로 옮깁니다. TUI 프로세스는 하나만 떠 있고 상태를 잃지 않습니다.
@@ -75,8 +79,9 @@ bind W command-prompt -p "branch:" "run-shell -b \"<node> <cli.js> --pane '#{pan
 사이드바 TUI 안에서:
 
 - `j`/`k`/↑/↓: 행 이동
-- `Enter`: 선택한 window로 이동 (사이드바는 그 window를 따라옵니다). 자는 창이면 sleep이 풀립니다
+- `Enter`: 선택한 window로 이동 (사이드바는 그 window를 따라옵니다). 자는 창이면 sleep이 풀리고, 안 읽음 표시도 지워집니다
 - `s`: 선택한 window sleep 토글
+- `m`: 선택한 window 안 읽음 토글
 - `g`: `recent`/`group` 보기 전환
 - `n`: branch 이름 입력 후 그 저장소에 `wt new` 실행 (새 세션이 열리고 그리로 이동합니다)
 - `o`: 안 열린 worktree 목록에서 골라 열기. 아는 저장소마다 "+ 새 worktree" 항목이 있어 그 자리에서 `n`과 같은 입력줄로 넘어갑니다

@@ -20,6 +20,14 @@ export interface EventRow {
 
 export type { AgentRecord };
 
+export interface WindowFlags {
+  sleep: boolean;
+  /** 상태가 바뀌었는데 아직 그 창에 들어가 보지 않았다. */
+  unread: boolean;
+  /** 마지막으로 읽음 처리된 시점의 상태. 같은 상태가 이어질 때 unread를 다시 켜지 않으려고 둔다. */
+  seenState: string | null;
+}
+
 export interface Db {
   raw: DatabaseSync;
   getOffset(spoolFile: string): number;
@@ -29,8 +37,10 @@ export interface Db {
   getAgent(tmuxPid: string, paneId: string): AgentRecord | undefined;
   upsertAgent(rec: AgentRecord): void;
   listAgents(tmuxPid?: string): AgentRecord[];
-  getSleepMap(serverKey: string): Map<string, boolean>;
+  getWindowFlags(serverKey: string): Map<string, WindowFlags>;
   setSleep(serverKey: string, windowId: string, sleep: boolean): void;
+  setUnread(serverKey: string, windowId: string, unread: boolean): void;
+  setSeenState(serverKey: string, windowId: string, state: string): void;
   pruneWindowFlags(serverKey: string, liveWindowIds: string[]): void;
   transaction<T>(fn: () => T): T;
   close(): void;
@@ -73,16 +83,25 @@ CREATE TABLE IF NOT EXISTS window_flags (
   server_key TEXT NOT NULL,
   window_id TEXT NOT NULL,
   sleep INTEGER NOT NULL DEFAULT 0,
+  unread INTEGER NOT NULL DEFAULT 0,
+  seen_state TEXT,
   PRIMARY KEY(server_key, window_id)
 );
 `;
 
 // 이미 만들어진 DB에는 CREATE TABLE IF NOT EXISTS가 컬럼을 더해주지 않는다.
-// 지금은 하나뿐이라 직접 확인하고 붙인다. 늘어나면 버전 테이블로 바꾼다.
+// 아직 몇 개뿐이라 직접 확인하고 붙인다. 더 늘어나면 버전 테이블로 바꾼다.
 function migrate(raw: DatabaseSync): void {
-  const cols = raw.prepare("PRAGMA table_info(agents)").all() as { name: string }[];
-  if (!cols.some((c) => c.name === "title")) {
+  const agentCols = raw.prepare("PRAGMA table_info(agents)").all() as { name: string }[];
+  if (!agentCols.some((c) => c.name === "title")) {
     raw.exec("ALTER TABLE agents ADD COLUMN title TEXT");
+  }
+  const flagCols = raw.prepare("PRAGMA table_info(window_flags)").all() as { name: string }[];
+  if (!flagCols.some((c) => c.name === "unread")) {
+    raw.exec("ALTER TABLE window_flags ADD COLUMN unread INTEGER NOT NULL DEFAULT 0");
+  }
+  if (!flagCols.some((c) => c.name === "seen_state")) {
+    raw.exec("ALTER TABLE window_flags ADD COLUMN seen_state TEXT");
   }
 }
 
@@ -153,10 +172,20 @@ export async function openDb(path: string): Promise<Db> {
     ),
     listAgentsAll: raw.prepare("SELECT * FROM agents"),
     listAgentsByPid: raw.prepare("SELECT * FROM agents WHERE tmux_pid = ?"),
-    getSleepMap: raw.prepare("SELECT window_id, sleep FROM window_flags WHERE server_key = ?"),
+    getWindowFlags: raw.prepare(
+      "SELECT window_id, sleep, unread, seen_state FROM window_flags WHERE server_key = ?"
+    ),
     setSleep: raw.prepare(
       `INSERT INTO window_flags(server_key, window_id, sleep) VALUES(?, ?, ?)
        ON CONFLICT(server_key, window_id) DO UPDATE SET sleep = excluded.sleep`
+    ),
+    setUnread: raw.prepare(
+      `INSERT INTO window_flags(server_key, window_id, unread) VALUES(?, ?, ?)
+       ON CONFLICT(server_key, window_id) DO UPDATE SET unread = excluded.unread`
+    ),
+    setSeenState: raw.prepare(
+      `INSERT INTO window_flags(server_key, window_id, seen_state) VALUES(?, ?, ?)
+       ON CONFLICT(server_key, window_id) DO UPDATE SET seen_state = excluded.seen_state`
     ),
   };
 
@@ -216,12 +245,28 @@ export async function openDb(path: string): Promise<Db> {
       ) as Record<string, unknown>[];
       return rows.map(rowToAgent);
     },
-    getSleepMap(serverKey) {
-      const rows = stmts.getSleepMap.all(serverKey) as { window_id: string; sleep: number }[];
-      return new Map(rows.map((r) => [r.window_id, r.sleep === 1]));
+    getWindowFlags(serverKey) {
+      const rows = stmts.getWindowFlags.all(serverKey) as {
+        window_id: string;
+        sleep: number;
+        unread: number;
+        seen_state: string | null;
+      }[];
+      return new Map(
+        rows.map((r) => [
+          r.window_id,
+          { sleep: r.sleep === 1, unread: r.unread === 1, seenState: r.seen_state ?? null },
+        ])
+      );
     },
     setSleep(serverKey, windowId, sleep) {
       stmts.setSleep.run(serverKey, windowId, sleep ? 1 : 0);
+    },
+    setUnread(serverKey, windowId, unread) {
+      stmts.setUnread.run(serverKey, windowId, unread ? 1 : 0);
+    },
+    setSeenState(serverKey, windowId, state) {
+      stmts.setSeenState.run(serverKey, windowId, state);
     },
     pruneWindowFlags(serverKey, liveWindowIds) {
       // 다른 server_key까지 지우면 안 된다. tmux 서버가 여럿이면 사이드바끼리 서로의

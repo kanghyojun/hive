@@ -14,7 +14,8 @@ import {
 } from "../state.js";
 import { basename } from "node:path";
 import { listWorktrees, resolveRepo, type RepoInfo } from "../git.js";
-import { buildRows, resolvePaneAgents, type Row, type ViewMode } from "../model.js";
+import { buildRows,
+  unreadUpdates, resolvePaneAgents, type Row, type ViewMode } from "../model.js";
 import {
   capturePaneTail,
   listPanes,
@@ -87,6 +88,8 @@ const SPINNER_MS = 400;
 // 한 행이 둘 다면 선택 색이 위에 온다. 대신 그 행으로 실제 옮겨가는 순간 선택을 아예 해제해서
 // 자홍 막대를 화면에서 없앤다. 남겨두면 사이드바로 돌아왔을 때 커서가 어디 있는지 헷갈린다.
 const BAR = "▌";
+// 안 읽음 표시. 왼쪽의 선택/현재 막대(BAR)와 반대쪽을 채워 서로 헷갈리지 않게 한다.
+const UNREAD_BAR = "▐";
 // 지금 보고 있는 창이 주인공이라 진한 청록, 옮겨다니는 커서는 그보다 옅은 회색으로 둔다.
 const SELECT_COLOR = "gray";
 const CURRENT_COLOR = "cyan";
@@ -97,6 +100,7 @@ const HELP_LINES = [
   "1-9    번호로 바로 이동",
   "Enter  해당 window로",
   "s      sleep 토글",
+  "m      안 읽음 토글",
   "g      recent/group",
   "n      worktree 생성",
   "o      worktree 열기",
@@ -222,11 +226,16 @@ export function App(): React.JSX.Element {
       const savedMode = loadMode();
       if (savedMode !== mode) setMode(savedMode);
 
+      const flags = db.getWindowFlags(server.startTime);
+      const myPane = currentPaneId();
+      const myWindowId = panes.find((p) => p.paneId === myPane)?.windowId ?? null;
+
       const nextRows = buildRows({
         panes,
         agents: db.listAgents(),
         repoByCwd,
-        sleepMap: db.getSleepMap(server.startTime),
+        sleepMap: new Map([...flags].map(([id, f]) => [id, f.sleep])),
+        unreadMap: new Map([...flags].map(([id, f]) => [id, f.unread])),
         agentByPane: paneAgentsRef.current,
         now,
         mode: savedMode,
@@ -234,10 +243,26 @@ export function App(): React.JSX.Element {
         screenWaitingPanes: screenWaitingRef.current,
       });
 
-      const myPane = currentPaneId();
-      setCurrentWindowId(panes.find((p) => p.paneId === myPane)?.windowId ?? null);
+      // 상태가 바뀐 창에 안 읽음을 켠다. 방금 켠 건 다음 tick을 기다리지 않고 이번 프레임에 바로 그린다.
+      const justUnread = new Set<string>();
+      for (const u of unreadUpdates({
+        rows: nextRows,
+        seenStates: new Map([...flags].map(([id, f]) => [id, f.seenState])),
+        currentWindowId: myWindowId,
+      })) {
+        db.setSeenState(server.startTime, u.windowId, u.seenState);
+        if (!u.unread) continue;
+        db.setUnread(server.startTime, u.windowId, true);
+        justUnread.add(u.windowId);
+      }
 
-      setRows(nextRows);
+      setCurrentWindowId(myWindowId);
+
+      setRows(
+        justUnread.size === 0
+          ? nextRows
+          : nextRows.map((r) => (justUnread.has(r.windowId) ? { ...r, unread: true } : r))
+      );
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -344,8 +369,11 @@ export function App(): React.JSX.Element {
       // 직접 들어간 창은 더 이상 자는 창이 아니다. 여기서 풀어주지 않으면 목록 맨 아래 어두운 자리에
       // 지금 보고 있는 창이 남아서, s를 한 번 더 눌러야 제자리로 온다.
       const db = dbRef.current;
-      if (row.sleep && db) {
-        db.setSleep(serverInfo().startTime, row.windowId, false);
+      if (db && (row.sleep || row.unread)) {
+        const serverKey = serverInfo().startTime;
+        if (row.sleep) db.setSleep(serverKey, row.windowId, false);
+        // 들어가 본 창은 읽은 창이다.
+        if (row.unread) db.setUnread(serverKey, row.windowId, false);
         void tickRef.current();
       }
       // 옮겨갔으면 커서는 할 일이 끝났다. 그 창은 이제 "지금 창"(청록)으로 표시된다.
@@ -360,6 +388,14 @@ export function App(): React.JSX.Element {
     if (!actionRow || !db) return;
     const server = serverInfo();
     db.setSleep(server.startTime, actionRow.windowId, !actionRow.sleep);
+    void tick();
+  }, [actionRow, tick]);
+
+  // 지금 볼 여유가 없는 창을 도로 안 읽음으로 돌려놓거나, 표시만 지우고 싶을 때 쓴다.
+  const toggleUnread = useCallback(() => {
+    const db = dbRef.current;
+    if (!actionRow || !db) return;
+    db.setUnread(serverInfo().startTime, actionRow.windowId, !actionRow.unread);
     void tick();
   }, [actionRow, tick]);
 
@@ -672,6 +708,7 @@ export function App(): React.JSX.Element {
     else if (input === "k" || key.upArrow) moveSelection(-1);
     else if (key.return) activateRow(actionRow);
     else if (input === "s") toggleSleep();
+    else if (input === "m") toggleUnread();
     else if (input === "g") toggleMode();
     else if (input === "r") void tick();
     else if (input === "n") setBranchInput("");
@@ -747,6 +784,10 @@ export function App(): React.JSX.Element {
         : " ".repeat(AGENT_GLYPH_WIDTH + 1)
       : "";
     const barColor = isSelected ? SELECT_COLOR : isCurrent ? CURRENT_COLOR : undefined;
+    // 안 읽음 막대는 오른쪽 끝에 붙인다. 그 자리와 최소 여백 한 칸을 본문에서 미리 뺀다.
+    const bodyWidth = row.unread ? Math.max(0, width - 2) : width;
+    const text = clip(`${indent}${num} ${agentTag}${icon} ${label}`, bodyWidth);
+    const unreadPad = " ".repeat(Math.max(0, width - stringWidth(text) - 1));
 
     pushLine(
       <Text key={row.key} wrap="truncate-end">
@@ -756,8 +797,14 @@ export function App(): React.JSX.Element {
           dimColor={row.sleep}
           color={row.sleep ? undefined : STATE_COLOR[row.state]}
         >
-          {clip(`${indent}${num} ${agentTag}${icon} ${label}`, width) + tail}
+          {text}
         </Text>
+        {row.unread ? (
+          <Text dimColor={row.sleep} color={row.sleep ? undefined : STATE_COLOR[row.state]}>
+            {unreadPad + UNREAD_BAR}
+          </Text>
+        ) : null}
+        <Text>{tail}</Text>
       </Text>,
       row
     );

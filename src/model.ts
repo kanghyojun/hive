@@ -38,6 +38,8 @@ export interface Row {
   lastInputTs: number;
   lastInputIsFallback: boolean;
   sleep: boolean;
+  /** 상태가 바뀌었는데 아직 그 창에 들어가 보지 않았다. 행 오른쪽 끝에 막대로 표시한다. */
+  unread: boolean;
   active: boolean;
   depth: number;
 }
@@ -65,6 +67,7 @@ export interface BuildRowsInput {
   agents: AgentRecord[];
   repoByCwd: Map<string, RepoInfo | null>;
   sleepMap: Map<string, boolean>;
+  unreadMap?: Map<string, boolean>;
   agentByPane?: Map<string, AgentKind>;
   now: number;
   mode: ViewMode;
@@ -264,6 +267,7 @@ export function buildRows(input: BuildRowsInput): Row[] {
       lastInputTs: w.lastPromptTs ?? w.windowActivity * 1000,
       lastInputIsFallback,
       sleep: input.sleepMap.get(w.windowId) ?? false,
+      unread: input.unreadMap?.get(w.windowId) ?? false,
       active: w.active,
       depth: 0,
     });
@@ -296,6 +300,38 @@ function sortByAttention(rows: Row[]): Row[] {
 
 const SLEEP_GROUP_KEY = "__sleep__";
 
+// unread를 켜는 상태. "이제 내 차례"라는 신호만 잡는다. working 시작이나 idle 전환은
+// 진행 상황이지 부름이 아니라서 표시하지 않는다.
+const NOTIFY_STATES = new Set<AgentState>(["waiting", "done"]);
+
+export interface UnreadUpdate {
+  windowId: string;
+  /** 이번에 본 것으로 기록할 상태. 같은 상태가 이어지는 동안 다시 켜지지 않게 한다. */
+  seenState: AgentState;
+  /** true면 안 읽음을 켠다. false는 "끄라"가 아니라 "건드리지 말라"는 뜻이다. */
+  unread: boolean;
+}
+
+// 상태가 직전에 본 것과 달라진 창만 골라낸다. 지금 보고 있는 창은 눈앞에서 바뀐 것이라
+// 표시를 붙이지 않고 본 상태만 갱신한다.
+export function unreadUpdates(input: {
+  rows: Row[];
+  seenStates: Map<string, string | null>;
+  currentWindowId: string | null;
+}): UnreadUpdate[] {
+  const updates: UnreadUpdate[] = [];
+  for (const row of input.rows) {
+    if (row.kind !== "window") continue;
+    if (input.seenStates.get(row.windowId) === row.state) continue;
+    updates.push({
+      windowId: row.windowId,
+      seenState: row.state,
+      unread: NOTIFY_STATES.has(row.state) && row.windowId !== input.currentWindowId,
+    });
+  }
+  return updates;
+}
+
 function maxInputTs(rows: Row[]): number {
   return rows.reduce((max, r) => Math.max(max, r.lastInputTs), 0);
 }
@@ -327,6 +363,7 @@ function headerRow(
     lastInputTs: maxInputTs(rows),
     lastInputIsFallback: true,
     sleep: false,
+    unread: false,
     active: false,
     depth,
   };
