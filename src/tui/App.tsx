@@ -1,5 +1,5 @@
 import { readFileSync, writeFileSync } from "node:fs";
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useInput, useStdin, useWindowSize } from "ink";
 import { openDb, type Db } from "../db.js";
 import { ingestAll } from "../spool.js";
@@ -39,6 +39,7 @@ import {
   wtRemove,
   type WtRemovePlan,
 } from "../worktree.js";
+import { collapseHome, listDirCandidates, sliceStart, type DirCandidate } from "../pathPicker.js";
 import {
   abConfigPath,
   abLocalInstalled,
@@ -52,13 +53,18 @@ import { dbPath, spoolDir, uiStatePath, ensureDirs } from "../paths.js";
 const TICK_MS = 1000;
 const SCREEN_CHECK_MS = 3000;
 const SCREEN_TAIL_LINES = 25;
+const JUMP_MAX = 9;
+const REPO_CANDIDATE_MAX = 8;
 const AB_PROBE_MS = 30_000;
 const USAGE_REFRESH_MS = 30_000;
 
-/** path가 없으면 "그 저장소에 새 worktree 만들기" 항목이다. */
+/**
+ * path가 없으면 "그 저장소에 새 worktree 만들기" 항목이고,
+ * repoRoot까지 없으면 "hive가 모르는 저장소를 경로로 찾기" 항목이다.
+ */
 interface PickerItem {
   label: string;
-  repoRoot: string;
+  repoRoot?: string;
   path?: string;
 }
 
@@ -89,7 +95,6 @@ const BAR = "▌";
 // 지금 보고 있는 창이 주인공이라 진한 청록, 옮겨다니는 커서는 그보다 옅은 회색으로 둔다.
 const SELECT_COLOR = "gray";
 const CURRENT_COLOR = "cyan";
-const JUMP_MAX = 9;
 
 const HELP_LINES = [
   "j/k    위/아래",
@@ -98,7 +103,7 @@ const HELP_LINES = [
   "s      sleep 토글",
   "g      recent/group",
   "n      worktree 생성",
-  "o      worktree 열기",
+  "o      worktree 열기 / 저장소 찾기",
   "D      worktree 삭제",
   "u      사용량 보기",
   "r      새로고침",
@@ -165,6 +170,7 @@ export function App(): React.JSX.Element {
   const [showHelp, setShowHelp] = useState(false);
   const [confirm, setConfirm] = useState<{ plan: WtRemovePlan; input: string } | null>(null);
   const [picker, setPicker] = useState<{ items: PickerItem[]; cursor: number } | null>(null);
+  const [repoInput, setRepoInput] = useState<{ text: string; cursor: number } | null>(null);
   const [ab, setAb] = useState<AbStatus | null>(null);
   const [showUsage, setShowUsage] = useState(false);
   const [usage, setUsage] = useState<AgentUsage[]>([]);
@@ -434,10 +440,6 @@ export function App(): React.JSX.Element {
         ...knownRepos(),
       ]),
     ];
-    if (repos.length === 0) {
-      setStatusMsg("아는 저장소가 없습니다");
-      return;
-    }
     const items: PickerItem[] = [];
     for (const repo of repos) {
       for (const entry of unopenedWorktrees(listWorktrees(repo), panesRef.current)) {
@@ -449,12 +451,18 @@ export function App(): React.JSX.Element {
       }
       items.push({ label: `${basename(repo)}: + 새 worktree`, repoRoot: repo });
     }
+    // hive가 아직 모르는 저장소로 가는 유일한 입구다. 아는 저장소가 없어도 이 항목은 남는다.
+    items.push({ label: "+ 다른 저장소 찾기…" });
     setPicker({ items, cursor: 0 });
   }, [windowRows]);
 
   const choosePicker = useCallback((item: PickerItem | undefined) => {
     setPicker(null);
     if (!item) return;
+    if (!item.repoRoot) {
+      setRepoInput({ text: "~/", cursor: 0 });
+      return;
+    }
     if (!item.path) {
       branchRepoRef.current = item.repoRoot;
       setBranchInput("");
@@ -466,6 +474,24 @@ export function App(): React.JSX.Element {
     } catch (err) {
       setStatusMsg(err instanceof Error ? err.message : String(err));
     }
+  }, []);
+
+  // 한 단계만 readdir하므로 입력이 바뀔 때만 다시 읽으면 충분하다.
+  const repoCandidates = useMemo<DirCandidate[]>(
+    () => (repoInput === null ? [] : listDirCandidates(repoInput.text)),
+    [repoInput?.text]
+  );
+
+  const chooseRepoPath = useCallback((candidate: DirCandidate | undefined) => {
+    if (!candidate) return;
+    // 저장소가 아니면 그 안으로 한 단계 내려간다. 저장소면 브랜치를 물어보는 기존 흐름으로 넘긴다.
+    if (!candidate.isRepo) {
+      setRepoInput({ text: `${collapseHome(candidate.path)}/`, cursor: 0 });
+      return;
+    }
+    setRepoInput(null);
+    branchRepoRef.current = candidate.path;
+    setBranchInput("");
   }, []);
 
   // ab-local이 없는 머신에서는 표시 자체를 하지 않는다.
@@ -533,7 +559,7 @@ export function App(): React.JSX.Element {
     mouseDepsRef.current = {
       moveSelection,
       activateRow,
-      modalOpen: confirm !== null || picker !== null || branchInput !== null,
+      modalOpen: confirm !== null || picker !== null || branchInput !== null || repoInput !== null,
     };
   });
 
@@ -618,6 +644,22 @@ export function App(): React.JSX.Element {
         setPicker((p) => (p ? { ...p, cursor: (p.cursor - 1 + count) % count } : p));
       else if (/^[1-9]$/.test(input)) choosePicker(picker.items[Number(input) - 1]);
       else if (key.return) choosePicker(picker.items[picker.cursor]);
+      return;
+    }
+
+    // 타이핑으로 걸러야 해서 j/k를 커서로 못 쓴다. 방향키와 Tab, Ctrl-n/p로 옮긴다.
+    if (repoInput !== null) {
+      const count = repoCandidates.length;
+      const move = (d: number) =>
+        setRepoInput((r) => (r && count > 0 ? { ...r, cursor: (r.cursor + d + count) % count } : r));
+      // 입력이 바뀌면 후보가 통째로 달라지므로 커서를 맨 위로 되돌린다.
+      const retype = (text: string) => setRepoInput((r) => (r ? { text, cursor: 0 } : r));
+      if (key.escape) setRepoInput(null);
+      else if (key.return) chooseRepoPath(repoCandidates[repoInput.cursor]);
+      else if (key.upArrow || (key.tab && key.shift) || (key.ctrl && input === "p")) move(-1);
+      else if (key.downArrow || key.tab || (key.ctrl && input === "n")) move(1);
+      else if (key.backspace || key.delete) retype(repoInput.text.slice(0, -1));
+      else if (input && !key.ctrl && !key.meta) retype(repoInput.text + input);
       return;
     }
 
@@ -781,6 +823,34 @@ export function App(): React.JSX.Element {
         </Text>
       );
     });
+  }
+  if (repoInput !== null) {
+    footer.push(
+      <Text key="repo" wrap="truncate-end">
+        {clip(`repo: ${repoInput.text}`, width) + tail}
+      </Text>
+    );
+    if (repoCandidates.length === 0) {
+      footer.push(
+        <Text key="repo:none" dimColor wrap="truncate-end">
+          {clip("  없음 (Esc 취소)", width) + tail}
+        </Text>
+      );
+    }
+    const from = sliceStart(repoInput.cursor, repoCandidates.length, REPO_CANDIDATE_MAX);
+    for (const [offset, cand] of repoCandidates.slice(from, from + REPO_CANDIDATE_MAX).entries()) {
+      const selected = from + offset === repoInput.cursor;
+      // 저장소면 Enter가 곧 선택이고, 아니면 그 안으로 내려간다는 뜻으로 슬래시를 붙인다.
+      const suffix = cand.isRepo ? "  ● git" : "/";
+      footer.push(
+        <Text key={`repo:${cand.path}`} wrap="truncate-end">
+          <Text color={selected ? SELECT_COLOR : undefined}>{selected ? BAR : " "}</Text>
+          <Text dimColor={!selected} color={selected ? undefined : cand.isRepo ? CURRENT_COLOR : undefined}>
+            {clip(`${cand.name}${suffix}`, width - 1) + tail}
+          </Text>
+        </Text>
+      );
+    }
   }
   // 개행이 섞인 메시지는 한 <Text>가 두 줄로 렌더돼 frameLinesRef 계산이 어긋난다.
   // 폭 안에 확실히 들어가게 clip까지 거친다.

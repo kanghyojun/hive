@@ -79,7 +79,7 @@ bind W command-prompt -p "branch:" "run-shell -b \"<node> <cli.js> --pane '#{pan
 - `s`: 선택한 window sleep 토글
 - `g`: `recent`/`group` 보기 전환
 - `n`: branch 이름 입력 후 그 저장소에 `wt new` 실행 (새 세션이 열리고 그리로 이동합니다)
-- `o`: 안 열린 worktree 목록에서 골라 열기. 아는 저장소마다 "+ 새 worktree" 항목이 있어 그 자리에서 `n`과 같은 입력줄로 넘어갑니다
+- `o`: 안 열린 worktree 목록에서 골라 열기. 아는 저장소마다 "+ 새 worktree" 항목이 있어 그 자리에서 `n`과 같은 입력줄로 넘어갑니다. 맨 아래 "+ 다른 저장소 찾기…"는 hive가 아직 모르는 저장소로 가는 입구입니다. `~/`부터 시작하는 입력줄에 경로를 치면 한 단계씩 하위 디렉토리를 fuzzy로 걸러 보여주고(↑/↓·Tab·Ctrl-n/p로 커서, Esc 취소), `● git`으로 표시된 저장소에서 Enter를 누르면 브랜치 입력줄로 넘어가 그 자리에서 worktree와 세션을 새로 만듭니다. 한 번 쓴 저장소는 `~/.hive/repos.json`에 적혀 다음부터는 목록에 바로 뜹니다
 - `D`: 선택한 행의 worktree 삭제. 확인 후 `git worktree remove` + 그 worktree를 쓰던 tmux 창 종료까지 합니다. 커밋 안 된 변경이 있으면 `yes`를 쳐야 지웁니다. 메인 저장소와 마지막 세션은 거부합니다. 브랜치는 남깁니다
 - `u`: 사용량 보기 토글
 - `r`: 강제 새로고침
