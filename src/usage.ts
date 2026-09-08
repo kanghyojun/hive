@@ -1,4 +1,4 @@
-import { closeSync, fstatSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
+import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, readdirSync, statSync } from "node:fs";
 import { extname, isAbsolute, join, normalize, resolve } from "node:path";
 import { homedir } from "node:os";
 import stringWidth from "string-width";
@@ -68,7 +68,7 @@ function claudeConfigDir(): string {
   return resolve(env);
 }
 
-// hud 설정을 읽는 이유는 경로를 두 곳에 적지 않으려는 것이다. hive는 이 파일을 쓰지 않는다.
+// hive statusline이 생기기 전에는 hud가 스냅샷을 써 줬다. 그렇게 설정해 둔 사람을 위해 계속 읽는다.
 function hudExternalUsagePath(): string | undefined {
   try {
     const raw = JSON.parse(
@@ -86,7 +86,12 @@ function hudExternalUsagePath(): string | undefined {
 }
 
 export function claudeSnapshotPath(): string {
-  return process.env.HIVE_CLAUDE_USAGE_PATH || hudExternalUsagePath() || claudeUsageSnapshotPath();
+  const env = process.env.HIVE_CLAUDE_USAGE_PATH;
+  if (env) return env;
+  // hive statusline이 쓴 자기 파일이 있으면 그게 이긴다. hud 경로는 그게 없을 때만 본다.
+  const own = claudeUsageSnapshotPath();
+  if (existsSync(own)) return own;
+  return hudExternalUsagePath() || own;
 }
 
 export function readClaudeUsage(): AgentUsage | null {
@@ -278,7 +283,7 @@ export function formatUsageLines(
     const glyph = AGENT_GLYPH[agent];
     const usage = usages.find((u) => u.agent === agent);
     if (!usage) {
-      push(agent === "claude" ? `${glyph} 스냅샷 없음 — README "사용량" 참고` : `${glyph} codex 세션 없음`);
+      push(agent === "claude" ? `${glyph} 스냅샷 없음 — hive statusline 등록` : `${glyph} codex 세션 없음`);
       continue;
     }
 

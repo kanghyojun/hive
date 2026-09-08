@@ -5,13 +5,15 @@ process.on("warning", (w) => {
   if (w.name !== "ExperimentalWarning") console.error(w);
 });
 
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, readFileSync, statSync } from "node:fs";
+import { spawn } from "node:child_process";
 import { join, resolve } from "node:path";
 import { Command } from "commander";
 import React from "react";
 import { render } from "ink";
 import { App } from "./tui/App.js";
 import {
+  claudeUsageSnapshotPath,
   dbPath,
   ensureDirs,
   hiveHome,
@@ -46,6 +48,12 @@ import {
 import { resolveRepo } from "./git.js";
 import { abConfigPath, abLocalInstalled, parseAbConfig, probeAbBridge } from "./abBridge.js";
 import { claudeSnapshotPath, readClaudeUsage, readCodexUsage } from "./usage.js";
+import {
+  SNAPSHOT_THROTTLE_MS,
+  parseStatuslinePayload,
+  shouldWriteSnapshot,
+  writeSnapshot,
+} from "./statusline.js";
 import { openDb } from "./db.js";
 import { ingestAll } from "./spool.js";
 import { effectiveState, reduceAgent } from "./state.js";
@@ -351,6 +359,55 @@ program
     const result = ingestAll(db, spoolDir(), reduceAgent);
     db.close();
     console.log(JSON.stringify(result));
+  });
+
+async function readAllStdin(): Promise<string> {
+  // statusLine으로 돌 때는 항상 파이프로 들어온다. 사람이 터미널에서 직접 쳐 본 경우엔 기다리지 않는다.
+  if (process.stdin.isTTY) return "";
+  const chunks: Buffer[] = [];
+  for await (const chunk of process.stdin) chunks.push(chunk as Buffer);
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+function saveStatuslineSnapshot(raw: string): void {
+  const snapshot = parseStatuslinePayload(raw);
+  if (!snapshot) return;
+  const path = claudeUsageSnapshotPath();
+  let prevRaw: string | undefined;
+  let prevMtimeMs: number | undefined;
+  try {
+    prevRaw = readFileSync(path, "utf8");
+    prevMtimeMs = statSync(path).mtimeMs;
+  } catch {
+    // 아직 스냅샷이 없는 첫 실행.
+  }
+  if (shouldWriteSnapshot(prevRaw, snapshot, prevMtimeMs, Date.now(), SNAPSHOT_THROTTLE_MS)) {
+    writeSnapshot(snapshot);
+  }
+}
+
+program
+  .command("statusline")
+  .description("Claude Code statusLine으로 등록해 창 사용률을 스냅샷으로 저장 (원래 쓰던 statusLine은 --exec로 감싼다)")
+  .option("--exec <command>", "감쌀 statusLine 명령. stdin 원문을 그대로 넘기고 출력과 종료 코드를 그대로 전달한다")
+  .action(async (opts: { exec?: string }) => {
+    const raw = await readAllStdin();
+    try {
+      saveStatuslineSnapshot(raw);
+    } catch {
+      // statusLine이 hive 때문에 죽으면 안 된다. 저장 실패는 조용히 넘긴다.
+    }
+    if (!opts.exec) return;
+
+    const code = await new Promise<number>((done) => {
+      const child = spawn("sh", ["-c", opts.exec as string], { stdio: ["pipe", "inherit", "inherit"] });
+      // 감싼 명령이 stdin을 안 읽으면 EPIPE가 난다. 그걸로 hive가 죽으면 statusLine이 통째로 빈다.
+      child.stdin.on("error", () => {});
+      child.stdin.end(raw);
+      child.on("error", () => done(1));
+      child.on("close", (c, signal) => done(c ?? (signal ? 1 : 0)));
+    });
+    process.exit(code);
   });
 
 program

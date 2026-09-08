@@ -125,15 +125,24 @@ hive ab status
 
 `u` 키로 켜는 패널입니다. Claude Code와 Codex의 창 사용률(%)과 리셋까지 남은 시간만 보여줍니다. 달러 환산, 토큰 합계, 세션별 사용량은 없습니다. 뷰가 꺼져 있으면 파일을 아예 읽지 않고, 켜져 있으면 30초마다 읽습니다.
 
-**Claude 쪽은 claude-hud가 스냅샷을 써 줘야 보입니다.** `~/.claude/plugins/claude-hud/config.json`의 `display`에 아래를 직접 추가하세요(hive는 이 파일을 고치지 않습니다).
+**Claude 쪽은 `hive statusline`을 statusLine으로 등록해야 보입니다.** Claude Code는 창 사용률을 statusLine 커맨드의 stdin JSON으로만 넘깁니다. hook이나 트랜스크립트에는 없습니다. 그래서 statusLine 자리를 빌리는 것 말고는 이 값을 얻을 길이 없습니다.
+
+`~/.claude/settings.json`을 직접 고치세요(hive는 이 파일을 고치지 않습니다). 이미 쓰던 statusLine이 있으면 `--exec`로 감싸면 됩니다.
 
 ```json
-"externalUsageWritePath": "/home/ed/.hive/claude-usage.json"
+"statusLine": {
+  "type": "command",
+  "command": "hive statusline --exec '원래 쓰던 명령'"
+}
 ```
 
-절대경로여야 하고, `.json`으로 끝나야 하고, 디렉토리가 이미 있어야 합니다. `display.showUsage`는 false여도 됩니다. statusLine은 Claude Code 세션이 떠 있을 때만 돌기 때문에 세션이 다 닫히면 값이 멈춥니다(그래서 갱신 시각을 같이 보여줍니다).
+`hive statusline`은 stdin을 읽어 사용량만 `~/.hive/claude-usage.json`에 저장하고, 읽은 stdin 원문을 그대로 감싼 명령에 넘긴 뒤 그 출력과 종료 코드를 그대로 전달합니다. HUD 화면은 그대로 남습니다. statusLine을 안 쓰고 있었다면 `--exec` 없이 `hive statusline`만 등록하면 됩니다(아무것도 출력하지 않습니다).
 
-hive는 `HIVE_CLAUDE_USAGE_PATH` → hud 설정의 `externalUsageWritePath` → `~/.hive/claude-usage.json` 순으로 스냅샷을 찾습니다.
+`hive`가 PATH에 없으면 절대경로가 필요합니다. `hive paths`의 `execPath`와 `cli`를 이어 붙여 `/path/to/node /path/to/dist/cli.js statusline --exec '...'`처럼 씁니다.
+
+statusLine은 Claude Code 세션이 떠 있을 때만 돌기 때문에 세션이 다 닫히면 값이 멈춥니다(그래서 갱신 시각을 같이 보여줍니다). 값이 그대로면 30초 안에는 파일을 다시 쓰지 않습니다.
+
+claude-hud를 쓰던 사람은 hud의 `display.externalUsageWritePath` 설정도 그대로 동작합니다. hive는 `HIVE_CLAUDE_USAGE_PATH` → `~/.hive/claude-usage.json`(있으면) → hud 설정의 `externalUsageWritePath` → `~/.hive/claude-usage.json` 순으로 스냅샷을 찾습니다.
 
 Codex는 설정이 필요 없습니다. `~/.codex/sessions`의 최신 rollout 파일 꼬리에서 마지막 `token_count` 줄의 `rate_limits`를 읽습니다. 따라서 값은 마지막 codex 응답 시점 기준이고, 플랜에 따라 5시간 창이 없을 수 있습니다(`prolite`는 7일 창만 냅니다).
 
@@ -147,10 +156,10 @@ hive usage    # 두 출처에서 읽은 원본과 스냅샷 경로 확인
 - `HIVE_WORKTREE_BASE` (기본 `{repoParent}/{repo}-worktrees`): `wt new`가 worktree를 만들 위치. `{repoParent}`, `{repo}` 플레이스홀더를 치환합니다.
 - `HIVE_INIT_SCRIPT`: `<repo>/.hive/init.sh`보다 우선하는 init script 절대경로.
 - `HIVE_TMUX_SOCKET`: tmux 소켓 경로. 없으면 `$TMUX`의 첫 필드, 그것도 없으면 기본 소켓.
-- `CLAUDE_CONFIG_DIR`: `hive hook`이 기본으로 읽고 쓰는 `settings.json`의 디렉토리. 사용량은 이 디렉토리 아래 `plugins/claude-hud/config.json`도 읽습니다(읽기만 합니다).
+- `CLAUDE_CONFIG_DIR`: `hive hook`이 기본으로 읽고 쓰는 `settings.json`의 디렉토리. 사용량은 자기 스냅샷이 없을 때만 이 디렉토리 아래 `plugins/claude-hud/config.json`도 읽습니다(읽기만 합니다).
 - `CODEX_HOME` (기본 `~/.codex`): `hive hook`의 `hooks.json`과 사용량이 읽는 `sessions/` 위치.
 - `AB_BRIDGE_CONFIG` (기본 `~/.config/ab-bridge/profiles.json`): ab-bridge 설정 파일 경로.
-- `HIVE_CLAUDE_USAGE_PATH`: claude-hud 스냅샷 경로를 직접 지정. hud 설정값보다 우선합니다.
+- `HIVE_CLAUDE_USAGE_PATH`: Claude 사용량 스냅샷 경로를 직접 지정. `~/.hive/claude-usage.json`과 hud 설정값보다 우선합니다.
 
 ## 알려진 제약
 
