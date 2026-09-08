@@ -110,6 +110,10 @@ const BAR = "▌";
 const RAIL = "│";
 // 안 읽음 표시. 왼쪽의 선택/현재 막대(BAR)와 반대쪽을 채워 서로 헷갈리지 않게 한다.
 const UNREAD_BAR = "▐";
+// 빈 문자열만 담은 <Text>는 ink가 줄로 세지 않는다(실측). 화면을 한 줄 비우려면 공백을 넣어야
+// 한다. 상태바를 pane 바닥에 붙이는 이상, 계산한 줄 수와 실제로 그려진 줄 수가 어긋나면 바로
+// 상태바 위치가 튄다.
+const BLANK_LINE = " ";
 // 지금 보고 있는 창이 주인공이라 진한 청록, 옮겨다니는 커서는 그보다 옅은 회색으로 둔다.
 const SELECT_COLOR = "gray";
 const CURRENT_COLOR = "cyan";
@@ -1141,8 +1145,7 @@ export function App(): React.JSX.Element {
     for (const line of HELP_LINES) {
       footer.push(
         <Text key={`help:${line}`} dimColor wrap="truncate-end">
-          {line}
-          {tail}
+          {(line || BLANK_LINE) + tail}
         </Text>
       );
     }
@@ -1181,9 +1184,8 @@ export function App(): React.JSX.Element {
   return (
     <Box flexDirection="column" width="100%">
       {visible.map((l) => l.el)}
-      {/* 빈 문자열 <Text>는 ink가 줄로 세지 않는다(실측). 공백 한 칸을 넣어야 줄이 생긴다. */}
       {Array.from({ length: filler }, (_, i) => (
-        <Text key={`filler:${i}`}>{" " + tail}</Text>
+        <Text key={`filler:${i}`}>{BLANK_LINE + tail}</Text>
       ))}
       {shownFooter}
       <Text wrap="truncate-end">
