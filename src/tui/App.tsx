@@ -40,6 +40,7 @@ import {
   type WtRemovePlan,
 } from "../worktree.js";
 import { collapseHome, listDirCandidates, sliceStart, type DirCandidate } from "../pathPicker.js";
+import { jumpIndex, jumpLabel, jumpLabelWidth, JUMP_PREFIX } from "../jump.js";
 import {
   abConfigPath,
   abLocalInstalled,
@@ -53,7 +54,6 @@ import { dbPath, spoolDir, uiStatePath, ensureDirs } from "../paths.js";
 const TICK_MS = 1000;
 const SCREEN_CHECK_MS = 3000;
 const SCREEN_TAIL_LINES = 25;
-const JUMP_MAX = 9;
 const REPO_CANDIDATE_MAX = 8;
 const AB_PROBE_MS = 30_000;
 const USAGE_REFRESH_MS = 30_000;
@@ -99,6 +99,7 @@ const CURRENT_COLOR = "cyan";
 const HELP_LINES = [
   "j/k    위/아래",
   "1-9    번호로 바로 이동",
+  "l1/ll1 열 번째부터는 l을 앞에 붙여서 (l9 다음 ll1)",
   "Enter  해당 window로",
   "s      sleep 토글",
   "g      recent/group",
@@ -171,6 +172,8 @@ export function App(): React.JSX.Element {
   const [confirm, setConfirm] = useState<{ plan: WtRemovePlan; input: string } | null>(null);
   const [picker, setPicker] = useState<{ items: PickerItem[]; cursor: number } | null>(null);
   const [repoInput, setRepoInput] = useState<{ text: string; cursor: number } | null>(null);
+  // 열 번째 이후 행으로 가려고 사용자가 쌓아 둔 접두사(l, ll, …)의 길이.
+  const [jumpPrefix, setJumpPrefix] = useState(0);
   const [ab, setAb] = useState<AbStatus | null>(null);
   const [showUsage, setShowUsage] = useState(false);
   const [usage, setUsage] = useState<AgentUsage[]>([]);
@@ -453,11 +456,13 @@ export function App(): React.JSX.Element {
     }
     // hive가 아직 모르는 저장소로 가는 유일한 입구다. 아는 저장소가 없어도 이 항목은 남는다.
     items.push({ label: "+ 다른 저장소 찾기…" });
+    setJumpPrefix(0);
     setPicker({ items, cursor: 0 });
   }, [windowRows]);
 
   const choosePicker = useCallback((item: PickerItem | undefined) => {
     setPicker(null);
+    setJumpPrefix(0);
     if (!item) return;
     if (!item.repoRoot) {
       setRepoInput({ text: "~/", cursor: 0 });
@@ -642,8 +647,10 @@ export function App(): React.JSX.Element {
       else if (input === "j" || key.downArrow) setPicker((p) => (p ? { ...p, cursor: (p.cursor + 1) % count } : p));
       else if (input === "k" || key.upArrow)
         setPicker((p) => (p ? { ...p, cursor: (p.cursor - 1 + count) % count } : p));
-      else if (/^[1-9]$/.test(input)) choosePicker(picker.items[Number(input) - 1]);
+      else if (input === JUMP_PREFIX && !key.ctrl) setJumpPrefix((n) => n + 1);
+      else if (/^[1-9]$/.test(input)) choosePicker(picker.items[jumpIndex(jumpPrefix, Number(input))]);
       else if (key.return) choosePicker(picker.items[picker.cursor]);
+      else if (jumpPrefix > 0) setJumpPrefix(0);
       return;
     }
 
@@ -673,12 +680,23 @@ export function App(): React.JSX.Element {
       return;
     }
 
+    // 아홉 개를 넘는 목록은 l을 쌓아 그 다음 아홉 칸으로 넘어간다. l9 다음이 ll1이다.
+    if (input === JUMP_PREFIX && !key.ctrl) {
+      setJumpPrefix((n) => n + 1);
+      return;
+    }
     if (/^[1-9]$/.test(input)) {
-      const target = windowRows[Number(input) - 1];
+      const target = windowRows[jumpIndex(jumpPrefix, Number(input))];
+      setJumpPrefix(0);
       if (target) {
         setSelectedKey(target.key);
         activateRow(target);
       }
+      return;
+    }
+    // 쌓다가 엉뚱한 키를 누르면 접두사만 버리고 그 키는 흘린다.
+    if (jumpPrefix > 0) {
+      setJumpPrefix(0);
       return;
     }
 
@@ -718,6 +736,8 @@ export function App(): React.JSX.Element {
   const agentKinds = new Set(windowRows.map((r) => r.agent).filter(Boolean));
   const showGlyph = !(HIDE_GLYPH_WHEN_UNIFORM && agentKinds.size <= 1);
 
+  // 라벨이 길어지면 앞 항목도 같이 밀어 열을 맞춘다. 아홉 개까지는 지금처럼 한 글자다.
+  const jumpWidth = jumpLabelWidth(windowRows.length);
   let ordinal = 0;
   for (const row of rows) {
     const indent = "  ".repeat(row.depth);
@@ -747,8 +767,7 @@ export function App(): React.JSX.Element {
     const isCurrent = row.windowId === currentWindowId;
     const spinning = row.state === "working" && !row.sleep;
     const icon = (row.sleep ? "z" : "") + (spinning ? SPINNER[frame % SPINNER.length] : STATE_ICON[row.state]);
-    // 숫자 키로 바로 갈 수 있는 건 앞에서 9개까지다. 그 뒤로는 자리만 비워 열을 맞춘다.
-    const num = ordinal <= JUMP_MAX ? String(ordinal) : " ";
+    const num = jumpLabel(ordinal - 1).padStart(jumpWidth);
     // claude가 pane 제목에 쓰는 "지금 하는 일"이 가장 최신이라 그걸 먼저 쓴다.
     // 없으면 직접 붙인 창 이름 → 세션 첫 입력 → 어느 tmux 세션의 몇 번 창인지 순으로 내려간다.
     const label =
@@ -813,9 +832,10 @@ export function App(): React.JSX.Element {
         {clip("열기 (j/k Enter, Esc 취소)", width) + tail}
       </Text>
     );
+    const pickerJumpWidth = jumpLabelWidth(picker.items.length);
     picker.items.forEach((item, i) => {
       const selected = i === picker.cursor;
-      const num = i < JUMP_MAX ? String(i + 1) : " ";
+      const num = jumpLabel(i).padStart(pickerJumpWidth);
       footer.push(
         <Text key={`picker:${i}`} wrap="truncate-end">
           <Text color={selected ? SELECT_COLOR : undefined}>{selected ? BAR : " "}</Text>
@@ -823,6 +843,13 @@ export function App(): React.JSX.Element {
         </Text>
       );
     });
+  }
+  if (jumpPrefix > 0) {
+    footer.push(
+      <Text key="jump" wrap="truncate-end">
+        {clip(`jump: ${JUMP_PREFIX.repeat(jumpPrefix)}`, width) + tail}
+      </Text>
+    );
   }
   if (repoInput !== null) {
     footer.push(
