@@ -36,6 +36,16 @@ export function reposPath(): string {
   return join(hiveHome(), "repos.json");
 }
 
+export function cronPath(): string {
+  return join(hiveHome(), "cron.json");
+}
+
+// cron은 TUI tick 안에서 도는데 거기서 던지면 사이드바가 통째로 에러 화면이 된다.
+// 그래서 실패를 삼키고 이 파일에만 남긴다.
+export function cronLogPath(): string {
+  return join(logsDir(), "cron.log");
+}
+
 // claude-hud가 스냅샷을 써 줄 기본 경로. hud는 디렉토리가 이미 있을 때만 쓰므로 ensureDirs()가 만든 HIVE_HOME을 쓴다.
 export function claudeUsageSnapshotPath(): string {
   return join(hiveHome(), "claude-usage.json");
