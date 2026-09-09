@@ -10,6 +10,7 @@ import {
   hiveHookStatus,
   installHooks,
   parseCodexHookState,
+  pruneMissingHiveHooks,
   removeHiveHooks,
   statusHooks,
   uninstallHooks,
@@ -235,5 +236,47 @@ describe("installHooks / statusHooks (codex 파일 왕복)", () => {
     expect(after.hooks!.Stop.flatMap((g) => g.hooks.map((h) => h.command))).toEqual([orca.command]);
 
     rmSync(dir, { recursive: true, force: true });
+  });
+});
+
+// 워크트리에서 hooks install을 돌리면 그 워크트리 경로가 hook으로 박힌다. 워크트리를 지우면
+// 실행할 수 없는 hook만 남아서 agent가 뜰 때마다 "not found"를 뱉는다.
+describe("pruneMissingHiveHooks", () => {
+  const dead = "/home/ed/src/hive-worktrees/hive/cron/hooks/claude-hook.sh";
+  const alive = SCRIPT;
+  const exists = (path: string) => path === alive;
+
+  it("사라진 hive hook을 지운다", () => {
+    const settings: Settings = {
+      hooks: {
+        Stop: [{ hooks: [{ type: "command", command: alive }] }, { hooks: [{ type: "command", command: dead }] }],
+      },
+    };
+    const after = pruneMissingHiveHooks(settings, exists);
+    expect(after.hooks!.Stop.flatMap((g) => g.hooks.map((h) => h.command))).toEqual([alive]);
+  });
+
+  it("hive가 심지 않은 명령은 파일이 없어도 그대로 둔다", () => {
+    const other = { type: "command" as const, command: "/opt/other/tool.sh" };
+    const settings: Settings = { hooks: { Stop: [{ hooks: [other] }] } };
+    expect(pruneMissingHiveHooks(settings, exists)).toEqual(settings);
+  });
+
+  it("codex hook도 같은 기준으로 지운다", () => {
+    const deadCodex = "/home/ed/src/hive-worktrees/hive/cron/hooks/codex-hook.sh";
+    const settings: Settings = { hooks: { Stop: [{ hooks: [{ type: "command", command: deadCodex }] }] } };
+    expect(pruneMissingHiveHooks(settings, exists).hooks?.Stop).toBeUndefined();
+  });
+
+  it("지우고 나서 빈 그룹은 남기지 않는다", () => {
+    const settings: Settings = {
+      hooks: {
+        Stop: [{ matcher: "*", hooks: [{ type: "command", command: dead }] }],
+        PreToolUse: [{ matcher: "*", hooks: [{ type: "command", command: alive }] }],
+      },
+    };
+    const after = pruneMissingHiveHooks(settings, exists);
+    expect(after.hooks?.Stop).toBeUndefined();
+    expect(after.hooks!.PreToolUse).toHaveLength(1);
   });
 });

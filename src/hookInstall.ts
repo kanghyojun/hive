@@ -91,6 +91,30 @@ export function applyHiveHooks(
   return result;
 }
 
+// hive가 심는 hook은 <패키지 루트>/hooks/<agent>-hook.sh 꼴이다. 워크트리에서 install을 돌리면 그
+// 워크트리 경로가 박히는데, 워크트리를 지우면 실행할 수 없는 hook만 남아 agent가 뜰 때마다 에러를 뱉는다.
+// 그렇다고 없는 파일을 가리키는 hook을 몽땅 지우면 남의 설정까지 건드리므로 이 이름만 본다.
+const HIVE_HOOK_SCRIPT = /^\/(?:[^\s]*\/)?hooks\/(?:claude|codex)-hook\.sh$/;
+
+export function pruneMissingHiveHooks(
+  settings: Settings,
+  exists: (path: string) => boolean = existsSync
+): Settings {
+  if (!settings.hooks) return settings;
+  const result: Settings = { ...settings, hooks: { ...settings.hooks } };
+  for (const event of Object.keys(result.hooks!)) {
+    const groups = result.hooks![event]
+      .map((g) => ({
+        ...g,
+        hooks: g.hooks.filter((h) => !(HIVE_HOOK_SCRIPT.test(h.command) && !exists(h.command))),
+      }))
+      .filter((g) => g.hooks.length > 0);
+    if (groups.length > 0) result.hooks![event] = groups;
+    else delete result.hooks![event];
+  }
+  return result;
+}
+
 export function removeHiveHooks(settings: Settings, scriptPath: string): Settings {
   const result: Settings = { ...settings, hooks: { ...(settings.hooks ?? {}) } };
   for (const event of Object.keys(result.hooks!)) {
@@ -254,7 +278,8 @@ function targetAgents(opts: { agents?: AgentKind[] }): AgentKind[] {
 export function installHooks(opts: HookIoOptions = {}): HookIoResult[] {
   return targetAgents(opts).map((agent) => {
     const path = pathFor(agent, opts);
-    const next = applyHiveHooks(readSettings(path), hookScriptFor(agent), hookEventsFor(agent));
+    const cleaned = pruneMissingHiveHooks(readSettings(path));
+    const next = applyHiveHooks(cleaned, hookScriptFor(agent), hookEventsFor(agent));
     return writeWithBackup(agent, path, next, opts.dryRun);
   });
 }
