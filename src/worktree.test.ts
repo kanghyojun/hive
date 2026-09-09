@@ -45,6 +45,7 @@ function pane(overrides: Partial<PaneInfo>): PaneInfo {
     paneTitle: "",
     panePid: "1",
     sidebarPaneId: "",
+    sidebarMark: false,
     sessionAttached: false,
     ...overrides,
   };

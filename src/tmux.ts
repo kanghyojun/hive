@@ -96,12 +96,18 @@ export interface PaneInfo {
   panePid: string;
   /** 이 pane이 속한 세션의 hive 사이드바 pane id. 사이드바가 없으면 빈 문자열. */
   sidebarPaneId: string;
+  /** 이 pane 자신이 사이드바인지. 세션 옵션과 달리 pane을 따라다녀서 어긋나지 않는다. */
+  sidebarMark: boolean;
   /** 이 pane의 세션에 붙어 있는 클라이언트가 있는지. windowActive와 같이 봐야 "사람이 보고 있는 창"이 된다. */
   sessionAttached: boolean;
 }
 
 // sidebar.ts가 이 이름으로 세션 옵션을 심는다. 포맷 문자열 안에서는 값이 없어도 에러 대신 빈 문자열이 나온다(실측).
 export const SIDEBAR_PANE_OPTION = "@hive_sidebar_pane";
+
+// 세션 옵션은 사이드바가 죽는 순서나 join-pane에 따라 실제 pane과 어긋난다. pane 옵션은 pane과 함께
+// 사라지고 join-pane으로 window를 옮겨도 따라온다(실측). 그래서 "사이드바인가"는 이쪽으로 판단한다.
+export const SIDEBAR_MARK_OPTION = "@hive_sidebar";
 
 const PANE_FIELDS = [
   "#{session_name}",
@@ -119,6 +125,7 @@ const PANE_FIELDS = [
   "#{pane_title}",
   "#{pane_pid}",
   `#{${SIDEBAR_PANE_OPTION}}`,
+  `#{${SIDEBAR_MARK_OPTION}}`,
   // 붙어 있는 클라이언트 수다. 0이면 아무도 이 세션을 보고 있지 않다.
   "#{session_attached}",
 ].join("\t");
@@ -150,6 +157,7 @@ export function listPanes(): PaneInfo[] {
         paneTitle,
         panePid,
         sidebarPaneId,
+        sidebarMark,
         sessionAttached,
       ] = line.split("\t");
       return {
@@ -168,6 +176,7 @@ export function listPanes(): PaneInfo[] {
         paneTitle,
         panePid,
         sidebarPaneId,
+        sidebarMark: sidebarMark === "1",
         sessionAttached: sessionAttached !== undefined && sessionAttached !== "0",
       };
     });
@@ -325,6 +334,11 @@ export function splitLeft(opts: { target: string; width: number; command: string
   ]).trim();
 }
 
+// 사이드바를 지금 보는 창으로 데려올 때 쓴다. hook 안에서는 이 함수를 못 쓰고 tmux 명령 문자열을 짜야 한다.
+export function joinPaneLeft(opts: { source: string; target: string; width: number }): void {
+  tmux(["join-pane", "-d", "-hb", "-l", String(opts.width), "-s", opts.source, "-t", opts.target]);
+}
+
 // 커스텀(@) 옵션이 한 번도 set되지 않았으면 tmux가 빈 문자열이 아니라 "invalid option" 에러를 낸다(실측).
 // #{@name} 포맷 문자열은 비어 있는 값을 그냥 돌려주지만 show-options -v는 그렇지 않다.
 export function getSessionOption(session: string, name: string): string {
@@ -337,6 +351,10 @@ export function getSessionOption(session: string, name: string): string {
 
 export function setSessionOption(session: string, name: string, value: string): void {
   tmux(["set-option", "-t", session, name, value]);
+}
+
+export function setPaneOption(paneId: string, name: string, value: string): void {
+  tmux(["set-option", "-p", "-t", paneId, name, value]);
 }
 
 export function unsetSessionOption(session: string, name: string): void {
