@@ -28,6 +28,32 @@ export interface WindowFlags {
   seenState: string | null;
 }
 
+export type CronRunStatus = "claimed" | "launched" | "failed" | "done";
+
+export interface CronRunRow {
+  id: number;
+  jobId: string;
+  /** 예정 시각. 실행 시각이 아니다. 잡별로 유일해서 중복 실행을 막는 키가 된다. */
+  fireAt: number;
+  startedAt: number;
+  finishedAt: number | null;
+  status: CronRunStatus;
+  sessionName: string | null;
+  windowId: string | null;
+  cwd: string | null;
+  claimedBy: string | null;
+  error: string | null;
+}
+
+export interface CronRunPatch {
+  status: CronRunStatus;
+  finishedAt?: number;
+  sessionName?: string;
+  windowId?: string;
+  cwd?: string;
+  error?: string;
+}
+
 export interface Db {
   raw: DatabaseSync;
   getOffset(spoolFile: string): number;
@@ -42,6 +68,13 @@ export interface Db {
   setUnread(serverKey: string, windowId: string, unread: boolean): void;
   setSeenState(serverKey: string, windowId: string, state: string): void;
   pruneWindowFlags(serverKey: string, liveWindowIds: string[]): void;
+  /** 이 (jobId, fireAt)을 처음 잡은 쪽에만 rowid를 준다. 이미 잡혔으면 null. */
+  claimCronRun(row: { jobId: string; fireAt: number; startedAt: number; claimedBy: string }): number | null;
+  markCronRun(id: number, patch: CronRunPatch): void;
+  lastFireByJob(): Map<string, number>;
+  runningCronRuns(): CronRunRow[];
+  listCronRuns(jobId?: string, limit?: number): CronRunRow[];
+  reapCronRuns(a: { liveWindowIds: string[]; now: number }): number;
   transaction<T>(fn: () => T): T;
   close(): void;
 }
@@ -87,7 +120,28 @@ CREATE TABLE IF NOT EXISTS window_flags (
   seen_state TEXT,
   PRIMARY KEY(server_key, window_id)
 );
+CREATE TABLE IF NOT EXISTS cron_runs (
+  id INTEGER PRIMARY KEY,
+  job_id TEXT NOT NULL,
+  fire_at INTEGER NOT NULL,
+  started_at INTEGER NOT NULL,
+  finished_at INTEGER,
+  status TEXT NOT NULL,
+  session_name TEXT,
+  window_id TEXT,
+  cwd TEXT,
+  claimed_by TEXT,
+  error TEXT,
+  -- 사이드바가 여러 개 떠 있어도 같은 예정 시각을 두 번 실행하지 않게 막는 제약이다.
+  UNIQUE(job_id, fire_at)
+);
+CREATE INDEX IF NOT EXISTS cron_runs_job_fire ON cron_runs(job_id, fire_at DESC);
 `;
+
+// 자식 프로세스가 창을 띄우지 못하고 죽었다고 보기까지 기다리는 시간.
+const CRON_CLAIM_STALE_MS = 5 * 60_000;
+// 창을 띄운 직후에는 TUI가 들고 있는 pane 목록이 아직 그 창을 모를 수 있다. 그 사이를 봐준다.
+const CRON_LAUNCH_GRACE_MS = 30_000;
 
 // 이미 만들어진 DB에는 CREATE TABLE IF NOT EXISTS가 컬럼을 더해주지 않는다.
 // 아직 몇 개뿐이라 직접 확인하고 붙인다. 더 늘어나면 버전 테이블로 바꾼다.
@@ -187,7 +241,50 @@ export async function openDb(path: string): Promise<Db> {
       `INSERT INTO window_flags(server_key, window_id, seen_state) VALUES(?, ?, ?)
        ON CONFLICT(server_key, window_id) DO UPDATE SET seen_state = excluded.seen_state`
     ),
+    claimCronRun: raw.prepare(
+      `INSERT OR IGNORE INTO cron_runs(job_id, fire_at, started_at, status, claimed_by)
+       VALUES(?, ?, ?, 'claimed', ?)`
+    ),
+    markCronRun: raw.prepare(
+      `UPDATE cron_runs SET
+         status = @status,
+         finished_at = COALESCE(@finishedAt, finished_at),
+         session_name = COALESCE(@sessionName, session_name),
+         window_id = COALESCE(@windowId, window_id),
+         cwd = COALESCE(@cwd, cwd),
+         error = COALESCE(@error, error)
+       WHERE id = @id`
+    ),
+    lastFireByJob: raw.prepare("SELECT job_id, MAX(fire_at) AS fire_at FROM cron_runs GROUP BY job_id"),
+    runningCronRuns: raw.prepare(
+      "SELECT * FROM cron_runs WHERE status IN ('claimed', 'launched') ORDER BY fire_at DESC"
+    ),
+    listCronRunsAll: raw.prepare("SELECT * FROM cron_runs ORDER BY fire_at DESC, id DESC LIMIT ?"),
+    listCronRunsByJob: raw.prepare(
+      "SELECT * FROM cron_runs WHERE job_id = ? ORDER BY fire_at DESC, id DESC LIMIT ?"
+    ),
+    reapClaimed: raw.prepare(
+      `UPDATE cron_runs SET status = 'failed', finished_at = ?,
+         error = COALESCE(error, '창을 띄우지 못한 채 유예가 지났다')
+       WHERE status = 'claimed' AND started_at < ?`
+    ),
   };
+
+  function rowToCronRun(row: Record<string, unknown>): CronRunRow {
+    return {
+      id: Number(row.id),
+      jobId: String(row.job_id),
+      fireAt: Number(row.fire_at),
+      startedAt: Number(row.started_at),
+      finishedAt: row.finished_at === null ? null : Number(row.finished_at),
+      status: String(row.status) as CronRunStatus,
+      sessionName: (row.session_name as string | null) ?? null,
+      windowId: (row.window_id as string | null) ?? null,
+      cwd: (row.cwd as string | null) ?? null,
+      claimedBy: (row.claimed_by as string | null) ?? null,
+      error: (row.error as string | null) ?? null,
+    };
+  }
 
   function rowToAgent(row: Record<string, unknown>): AgentRecord {
     return {
@@ -279,6 +376,50 @@ export async function openDb(path: string): Promise<Db> {
         `DELETE FROM window_flags WHERE server_key = ? AND window_id NOT IN (${placeholders})`
       );
       stmt.run(serverKey, ...liveWindowIds);
+    },
+    claimCronRun(row) {
+      // UNIQUE(job_id, fire_at) 덕에 이 한 줄이 곧 락이다. 사이드바가 몇 개든 하나만 changes=1을 받는다.
+      const res = stmts.claimCronRun.run(row.jobId, row.fireAt, row.startedAt, row.claimedBy);
+      return Number(res.changes) === 1 ? Number(res.lastInsertRowid) : null;
+    },
+    markCronRun(id, patch) {
+      stmts.markCronRun.run({
+        id,
+        status: patch.status,
+        finishedAt: patch.finishedAt ?? null,
+        sessionName: patch.sessionName ?? null,
+        windowId: patch.windowId ?? null,
+        cwd: patch.cwd ?? null,
+        error: patch.error ?? null,
+      });
+    },
+    lastFireByJob() {
+      const rows = stmts.lastFireByJob.all() as { job_id: string; fire_at: number }[];
+      return new Map(rows.map((r) => [String(r.job_id), Number(r.fire_at)]));
+    },
+    runningCronRuns() {
+      return (stmts.runningCronRuns.all() as Record<string, unknown>[]).map(rowToCronRun);
+    },
+    listCronRuns(jobId, limit = 50) {
+      const rows = (
+        jobId === undefined ? stmts.listCronRunsAll.all(limit) : stmts.listCronRunsByJob.all(jobId, limit)
+      ) as Record<string, unknown>[];
+      return rows.map(rowToCronRun);
+    },
+    reapCronRuns(a) {
+      // TUI가 죽으면 claimed 행이 남고, overlap:skip 잡이 다시는 안 돈다. 그걸 푸는 게 이 함수다.
+      let changed = Number(stmts.reapClaimed.run(a.now, a.now - CRON_CLAIM_STALE_MS).changes);
+      // pane 목록을 못 읽었을 뿐인데 도는 잡을 끝난 것으로 처리하면 안 된다.
+      if (a.liveWindowIds.length > 0) {
+        const placeholders = a.liveWindowIds.map(() => "?").join(",");
+        const stmt = raw.prepare(
+          `UPDATE cron_runs SET status = 'done', finished_at = ?
+           WHERE status = 'launched' AND started_at < ?
+             AND (window_id IS NULL OR window_id NOT IN (${placeholders}))`
+        );
+        changed += Number(stmt.run(a.now, a.now - CRON_LAUNCH_GRACE_MS, ...a.liveWindowIds).changes);
+      }
+      return changed;
     },
     transaction(fn) {
       raw.exec("BEGIN IMMEDIATE");
