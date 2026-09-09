@@ -300,6 +300,20 @@ wt
     console.log(JSON.stringify(entries, null, 2));
   });
 
+// 400일 안에 예정 시각이 없는 스케줄(2월 30일 같은 것)도 있다. 그걸 1970년으로 찍으면 안 된다.
+function cronNextIso(spec: Parameters<typeof nextDue>[0], enabled: boolean): string | null {
+  if (!enabled) return null;
+  const at = nextDue(spec, Date.now());
+  return at === null ? null : new Date(at).toISOString();
+}
+
+function positiveInt(value: string | undefined, label: string): number | undefined {
+  if (value === undefined) return undefined;
+  const n = Number(value);
+  if (!Number.isFinite(n) || n < 0) throw new Error(`${label}에 숫자가 아닌 값이 왔습니다: ${value}`);
+  return n;
+}
+
 function loadJob(id: string): { job: CronJob; jobs: CronJob[] } {
   const cfg = readCronConfig();
   const job = cfg.jobs.find((j) => j.id === id);
@@ -336,7 +350,7 @@ cron
       repo: j.repo,
       worktree: j.worktree.mode,
       agent: j.agent,
-      nextDue: j.enabled ? new Date(nextDue(j.spec, Date.now()) ?? 0).toISOString() : null,
+      nextDue: cronNextIso(j.spec, j.enabled),
       lastFireAt: last.has(j.id) ? new Date(last.get(j.id)!).toISOString() : null,
       running: running.has(j.id),
     }));
@@ -402,7 +416,7 @@ cron
       agent: opts.agent,
       args: opts.arg as string[],
       prompt: opts.prompt,
-      graceMs: opts.grace ? Number(opts.grace) : DEFAULT_GRACE_MS,
+      graceMs: positiveInt(opts.grace, "--grace") ?? DEFAULT_GRACE_MS,
       overlap: opts.overlap,
       keepWindow: opts.keepWindow !== false,
       // 만든 시각보다 앞선 예정 시각은 흘려보낸다. 안 그러면 오늘 11시가 지난 뒤 잡을 만들면 곧바로 한 번 돈다.
@@ -447,14 +461,14 @@ cron
     ensureDirs();
     const { job } = loadJob(id);
     const now = Date.now();
-    const fireAt = opts.force ? now : opts.fireAt ? Number(opts.fireAt) : now;
+    const fireAt = opts.force ? now : (positiveInt(opts.fireAt, "--fire-at") ?? now);
     const db = await openDb(dbPath());
     try {
       const res = executeJob({
         db,
         job,
         fireAt,
-        runId: opts.claim ? Number(opts.claim) : null,
+        runId: positiveInt(opts.claim, "--claim") ?? null,
         now,
       });
       console.log(JSON.stringify({ ...res, fireAt }, null, 2));
@@ -472,7 +486,7 @@ cron
   .action(async (opts) => {
     ensureDirs();
     const db = await openDb(dbPath());
-    const rows = db.listCronRuns(opts.id, opts.limit ? Number(opts.limit) : 20);
+    const rows = db.listCronRuns(opts.id, positiveInt(opts.limit, "--limit") ?? 20);
     db.close();
     if (opts.json) {
       console.log(JSON.stringify(rows, null, 2));

@@ -60,12 +60,16 @@ import {
 } from "../abBridge.js";
 import { formatUsageLines, readClaudeUsage, readCodexUsage, type AgentUsage } from "../usage.js";
 import { dbPath, spoolDir, uiStatePath, ensureDirs } from "../paths.js";
+import { cronTick, logCronError } from "../cronRun.js";
 
 const TICK_MS = 1000;
 const SCREEN_CHECK_MS = 3000;
 const SCREEN_TAIL_LINES = 25;
 const REPO_CANDIDATE_MAX = 8;
 const AB_PROBE_MS = 30_000;
+// cron 판정은 예정 시각 기준이라 11:00:00에 보든 11:00:29에 보든 같은 fire를 소비한다.
+// 그래서 1초마다 볼 이유가 없다.
+const CRON_CHECK_MS = 30_000;
 // PR은 30개까지 받아오는데 footer는 잘려 나가므로 repoInput처럼 창을 내어 보여준다.
 const PR_CANDIDATE_MAX = 8;
 const USAGE_REFRESH_MS = 30_000;
@@ -182,6 +186,9 @@ export function App(): React.JSX.Element {
   const dbRef = useRef<Db | null>(null);
   const screenWaitingRef = useRef<Set<string>>(new Set());
   const lastScreenCheckRef = useRef(0);
+  const lastCronCheckRef = useRef(0);
+  // 설정 오타 하나로 30초마다 같은 줄이 로그에 쌓이지 않게 직전 내용과 비교한다.
+  const lastCronErrorRef = useRef("");
   // ps 전체 조회는 1초 tick마다 돌릴 만큼 싸지 않아서 화면 확인과 같은 주기로 갱신한다.
   const paneAgentsRef = useRef<Map<string, AgentKind>>(new Map());
 
@@ -250,6 +257,20 @@ export function App(): React.JSX.Element {
           if (looksLikePermissionPrompt(tail)) nextWaiting.add(pane.paneId);
         }
         screenWaitingRef.current = nextWaiting;
+      }
+
+      if (now - lastCronCheckRef.current > CRON_CHECK_MS) {
+        lastCronCheckRef.current = now;
+        // 여기서 던지면 아래 catch가 setError를 불러 사이드바가 통째로 에러 화면이 된다.
+        // cron.json 오타 하나에 그럴 수는 없으니 삼키고 로그로만 남긴다.
+        try {
+          const cron = cronTick({ db, now, liveWindowIds });
+          const joined = cron.errors.join(" | ");
+          if (joined && joined !== lastCronErrorRef.current) logCronError(joined);
+          lastCronErrorRef.current = joined;
+        } catch (err) {
+          logCronError(err instanceof Error ? err.message : String(err));
+        }
       }
 
       const repoByCwd = repoCacheRef.current;

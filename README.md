@@ -130,6 +130,49 @@ init script 실행 로그는 `~/.hive/logs/wt-<branch>.log`에 남습니다. ini
 
 `wt new`/`wt open`/`wt rm`을 한 저장소는 `~/.hive/repos.json`에 적어 둡니다. 창이 하나도 안 떠 있는 저장소를 `o` 목록에 보여주려면 이 목록이 필요합니다.
 
+## cron
+
+```
+hive cron list [--json]
+hive cron add <id> --schedule "<크론식>" --repo <path> --prompt <text>
+               [--worktree reuse|new|path] [--path <path>] [--branch <tpl>] [--base <ref>] [--init]
+               [--agent claude|codex] [--arg <값>]... [--grace <ms>] [--overlap skip|allow]
+               [--no-keep-window] [--disabled]
+hive cron rm <id>
+hive cron enable <id> | hive cron disable <id>
+hive cron run <id> [--force] [--fire-at <ms>] [--claim <rowid>]
+hive cron runs [--id <job>] [--limit <n>] [--json]
+hive cron next [--at <iso>]
+hive cron tick [--spawn]
+```
+
+정해진 시각에 worktree에서 에이전트를 띄웁니다. 잡은 `~/.hive/cron.json`에, 실행 이력은 `hive.db`의 `cron_runs`에 남습니다.
+
+```
+hive cron add llmwiki-daily --schedule "0 11 * * *" \
+  --repo ~/src/llmwiki --prompt "할 일이 있으면 todo로 만들어라"
+```
+
+**띄우는 방식은 사람이 하는 것과 같습니다.** tmux 창을 열고 그 안에서 `claude '<프롬프트>'`를 실행합니다(`-p`가 아니라 대화형입니다). 그래서 hook이 붙어 있으면 진행 상태가 사이드바에 그대로 나오고, 권한 프롬프트가 뜨면 사람이 가서 누를 수 있습니다. 창 이름은 `cron:<id>`입니다. 권한 옵션처럼 CLI에 넘길 인자는 `--arg`로 붙입니다(`--arg --permission-mode --arg acceptEdits`). hive는 기본값을 넣지 않습니다.
+
+그 worktree에 이미 창이 있으면 같은 세션에 창을 하나 더 붙이고, 없으면 세션을 새로 엽니다. 어느 쪽이든 **보고 있는 화면을 뺏지 않습니다**(`wt new`와 달리 `switch-client`를 부르지 않습니다).
+
+`--worktree`로 어디서 돌릴지 고릅니다. `reuse`(기본)는 `--repo` 경로 그대로, `path`는 `--path`로 준 경로, `new`는 `--branch` 템플릿으로 worktree를 새로 팝니다. 템플릿에는 `{date}`(로컬 YYYY-MM-DD), `{job}`, `{ts}`를 쓸 수 있고, 그 자리가 이미 있으면 그대로 씁니다. 커밋이나 푸시는 hive가 하지 않습니다. 필요하면 프롬프트에 적으세요.
+
+스케줄은 cron 5필드(분 시 일 월 요일)입니다. `*`, 숫자, 리스트(`1,15`), 범위(`1-5`), 스텝(`*/15`), 요일·월 이름(`mon`, `jan`)을 씁니다. 일과 요일을 둘 다 지정하면 표준 cron대로 OR로 칩니다. 시각은 로컬 타임존 기준입니다.
+
+**데몬은 없습니다.** 사이드바 TUI가 어디든 하나라도 떠 있으면 30초마다 판정합니다. 사이드바가 여러 개 떠 있어도 잡은 한 번만 돕니다. 전부 같은 예정 시각 정수를 계산하고, `cron_runs`의 `UNIQUE(job_id, fire_at)`이 하나만 통과시키기 때문입니다.
+
+hive가 꺼져 있어 실행 시각을 놓쳤으면 `--grace`(기본 6시간) 안에서만 따라잡습니다. 몇 번을 놓쳤든 한 번만 돕니다. 주 1회 잡이라면 유예를 이틀쯤으로 늘리는 게 맞습니다. 잡을 만들기 전의 예정 시각은 따라잡지 않습니다.
+
+실행 중인 잡이 다음 시각을 맞으면 기본으로 건너뜁니다(`--overlap allow`로 바꿉니다). "실행 중"은 창이 살아 있는 동안입니다. 창이 사라지면 끝난 것으로 봅니다. hive는 창을 띄우는 데까지만 알고 에이전트가 성공했는지는 모릅니다.
+
+`hive cron run <id> --force`는 스케줄과 무관하게 지금 한 번 돌립니다. 자동 실행과 같은 코드를 타므로 잡을 등록한 뒤 이걸로 한 번 확인해 보는 게 좋습니다.
+
+`hive cron tick`은 한 번 평가하고 끝냅니다. TUI 없이 돌리고 싶으면 이 한 줄을 시스템 crontab이나 systemd timer에 걸어도 됩니다.
+
+잡 하나에 오타가 나도 나머지는 그대로 돕니다. 걸러낸 이유는 `hive cron list`에 `!`로 붙고, TUI에서 난 실패는 `~/.hive/logs/cron.log`에 남습니다.
+
 ## ab-bridge
 
 `ab-local`이 PATH에 있을 때만 하단 상태바에 맥 브라우저 브리지(CDP) 상태를 `ab●`(연결됨) / `ab✗`(안 됨)로 보여줍니다. 30초마다 `tailscale ip -4 <macHost>`로 IP를 얻어 `http://<ip>:<port>/json/version`을 확인합니다. 설정은 `${AB_BRIDGE_CONFIG:-~/.config/ab-bridge/profiles.json}`을 읽고, 없으면 ab-bridge와 같은 기본값(`macbookpro:9222`)으로 돕니다.
@@ -178,6 +221,7 @@ hive usage    # 두 출처에서 읽은 원본과 스냅샷 경로 확인
 - `CLAUDE_CONFIG_DIR`: `hive hook`이 기본으로 읽고 쓰는 `settings.json`의 디렉토리. 사용량은 자기 스냅샷이 없을 때만 이 디렉토리 아래 `plugins/claude-hud/config.json`도 읽습니다(읽기만 합니다).
 - `CODEX_HOME` (기본 `~/.codex`): `hive hook`의 `hooks.json`과 사용량이 읽는 `sessions/` 위치.
 - `AB_BRIDGE_CONFIG` (기본 `~/.config/ab-bridge/profiles.json`): ab-bridge 설정 파일 경로.
+- `HIVE_HOME/cron.json`: cron 잡 정의. 환경변수는 아니지만 `hive cron add`가 쓰고 사람이 직접 고쳐도 됩니다.
 - `HIVE_CLAUDE_USAGE_PATH`: Claude 사용량 스냅샷 경로를 직접 지정. `~/.hive/claude-usage.json`과 hud 설정값보다 우선합니다.
 
 ## 알려진 제약
@@ -186,4 +230,6 @@ hive usage    # 두 출처에서 읽은 원본과 스냅샷 경로 확인
 - 다른 tmux 세션의 window로는 목록에 보이되 dim 처리되고, 이동 시 `switch-client`를 시도합니다만 이 경로는 실사용에서 충분히 검증되지 않았습니다.
 - codex를 npm 래퍼로 설치하면 `#{pane_current_command}`가 `node`로 나옵니다(실측). 그래서 3초마다 `ps`로 pane 하위 프로세스를 훑어 `claude`/`codex`를 찾습니다. 한 pane에서 claude가 codex를 자식으로 돌리면 얕은 쪽인 claude로 표시됩니다.
 - 사이드바 폭은 41칸으로 고정입니다(`src/sidebar.ts`의 `SIDEBAR_WIDTH`). tmux는 window 크기가 바뀌면 pane을 비율로 다시 나누기 때문에, 크기가 다른 클라이언트가 오가면 이 폭이 27칸이나 78칸으로 벌어집니다. TUI가 자기 폭을 보고 어긋나면 1초 안에 41로 되돌립니다. 그래서 pane 크기를 수동으로 바꿔도 유지되지 않습니다. 창이 좁아 41칸을 못 주면 되돌리기를 포기하고 다음 크기 변화까지 그대로 둡니다.
+- cron이 아는 것은 "창을 띄웠다"까지입니다. 에이전트가 일을 제대로 마쳤는지는 모릅니다. 창이 사라지면 끝난 것으로 칠 뿐입니다.
+- cron이 `--worktree new`로 판 worktree는 아무도 안 지웁니다. 주 1회면 1년에 52개가 쌓입니다. `hive wt rm`으로 직접 지우세요.
 - transcript tail, OSC 타이틀 파싱, 알림, 원격 접근, 멀티 머신 동기화, 테마, CI, 배포는 이번 프로토타입 범위 밖입니다.
