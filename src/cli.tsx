@@ -56,6 +56,17 @@ import {
   writeSnapshot,
 } from "./statusline.js";
 import { openDb } from "./db.js";
+import {
+  DEFAULT_GRACE_MS,
+  readCronConfig,
+  removeJob,
+  upsertJob,
+  writeCronConfig,
+  type CronJob,
+  type CronWorktree,
+} from "./cron.js";
+import { nextDue, parseCron } from "./cronSpec.js";
+import { cronTick, executeJob } from "./cronRun.js";
 import { ingestAll } from "./spool.js";
 import { effectiveState, reduceAgent } from "./state.js";
 
@@ -287,6 +298,223 @@ wt
     }
     const entries = listWorktrees(repoRoot).map((e) => ({ ...e, windows: windowsInWorktree(panes, e.path) }));
     console.log(JSON.stringify(entries, null, 2));
+  });
+
+function loadJob(id: string): { job: CronJob; jobs: CronJob[] } {
+  const cfg = readCronConfig();
+  const job = cfg.jobs.find((j) => j.id === id);
+  if (!job) throw new Error(`그런 cron job이 없습니다: ${id}`);
+  return { job, jobs: cfg.jobs };
+}
+
+function liveWindowIds(): string[] {
+  try {
+    return [...new Set(listPanes().map((p) => p.windowId))];
+  } catch {
+    // tmux 밖이면 창을 하나도 못 본 것으로 둔다. reaper가 도는 잡을 함부로 마감하지 않는다.
+    return [];
+  }
+}
+
+const cron = program.command("cron").description("스케줄에 맞춰 worktree에서 에이전트 실행");
+cron
+  .command("list")
+  .description("등록된 잡과 다음 실행 시각")
+  .option("--json", "JSON으로 출력")
+  .action(async (opts) => {
+    ensureDirs();
+    const cfg = readCronConfig();
+    const db = await openDb(dbPath());
+    const last = db.lastFireByJob();
+    const running = new Set(db.runningCronRuns().map((r) => r.jobId));
+    db.close();
+    const hookInstalled = statusHooks({ agents: ["claude"] }).some((r) => r.installed);
+    const rows = cfg.jobs.map((j) => ({
+      id: j.id,
+      enabled: j.enabled,
+      schedule: j.schedule,
+      repo: j.repo,
+      worktree: j.worktree.mode,
+      agent: j.agent,
+      nextDue: j.enabled ? new Date(nextDue(j.spec, Date.now()) ?? 0).toISOString() : null,
+      lastFireAt: last.has(j.id) ? new Date(last.get(j.id)!).toISOString() : null,
+      running: running.has(j.id),
+    }));
+    if (opts.json) {
+      console.log(JSON.stringify({ jobs: rows, errors: cfg.errors, hookInstalled }, null, 2));
+      return;
+    }
+    if (rows.length === 0) console.log("등록된 잡이 없습니다. hive cron add로 만드세요.");
+    for (const r of rows) {
+      const mark = r.enabled ? (r.running ? "*" : " ") : "-";
+      console.log(`${mark} ${r.id}  ${r.schedule}  ${r.worktree}  next=${r.nextDue ?? "-"}  last=${r.lastFireAt ?? "-"}`);
+    }
+    for (const e of cfg.errors) console.log(`! ${e}`);
+    if (!hookInstalled && rows.length > 0) {
+      console.log("! claude hook이 설치돼 있지 않아 cron이 띄운 창이 사이드바에서 idle로만 보입니다 (hive hook install).");
+    }
+  });
+cron
+  .command("add <id>")
+  .description("잡 추가 또는 덮어쓰기")
+  .requiredOption("--schedule <spec>", "cron 5필드 (예: \"0 11 * * *\")")
+  .requiredOption("--repo <path>", "저장소 경로")
+  .requiredOption("--prompt <text>", "에이전트에게 넘길 프롬프트")
+  .option("--worktree <mode>", "reuse | new | path (기본: reuse)", "reuse")
+  .option("--path <path>", "worktree=path일 때 실행할 경로")
+  .option("--branch <tpl>", "worktree=new일 때 브랜치 템플릿 ({date} {job} {ts})")
+  .option("--base <ref>", "새 브랜치의 base ref")
+  .option("--init", "worktree=new일 때 init script도 실행")
+  .option("--agent <kind>", "claude | codex (기본: claude)", "claude")
+  .option("--arg <value>", "에이전트 CLI에 넘길 인자 (여러 번)", (v: string, acc: string[]) => [...acc, v], [])
+  .option("--grace <ms>", "놓친 실행을 따라잡을 유예 (ms)")
+  .option("--overlap <mode>", "skip | allow (기본: skip)", "skip")
+  .option("--no-keep-window", "실행이 끝나면 창을 닫는다")
+  .option("--disabled", "꺼진 상태로 추가")
+  .action((id, opts) => {
+    const spec = parseCron(opts.schedule);
+    if (!spec) throw new Error(`schedule을 읽을 수 없습니다: ${opts.schedule}`);
+    let worktree: CronWorktree;
+    switch (opts.worktree) {
+      case "reuse":
+        worktree = { mode: "reuse" };
+        break;
+      case "path":
+        if (!opts.path) throw new Error("--worktree path 에는 --path 가 필요합니다");
+        worktree = { mode: "path", path: resolve(opts.path) };
+        break;
+      case "new":
+        if (!opts.branch) throw new Error("--worktree new 에는 --branch 가 필요합니다");
+        worktree = { mode: "new", branch: opts.branch, base: opts.base, init: !!opts.init };
+        break;
+      default:
+        throw new Error(`모르는 --worktree 값: ${opts.worktree}`);
+    }
+    const cfg = readCronConfig();
+    const before = cfg.jobs.find((j) => j.id === id);
+    const stored: CronJob = {
+      id,
+      enabled: !opts.disabled,
+      schedule: opts.schedule,
+      spec,
+      repo: resolve(opts.repo),
+      worktree,
+      agent: opts.agent,
+      args: opts.arg as string[],
+      prompt: opts.prompt,
+      graceMs: opts.grace ? Number(opts.grace) : DEFAULT_GRACE_MS,
+      overlap: opts.overlap,
+      keepWindow: opts.keepWindow !== false,
+      // 만든 시각보다 앞선 예정 시각은 흘려보낸다. 안 그러면 오늘 11시가 지난 뒤 잡을 만들면 곧바로 한 번 돈다.
+      createdAt: before?.createdAt ?? Date.now(),
+    };
+    writeCronConfig(upsertJob(cfg.jobs, stored));
+    console.log(JSON.stringify({ id, updated: !!before }, null, 2));
+  });
+cron
+  .command("rm <id>")
+  .description("잡 삭제")
+  .action((id) => {
+    const cfg = readCronConfig();
+    const { jobs, removed } = removeJob(cfg.jobs, id);
+    if (!removed) throw new Error(`그런 cron job이 없습니다: ${id}`);
+    writeCronConfig(jobs);
+    console.log(JSON.stringify({ id, removed }, null, 2));
+  });
+cron
+  .command("enable <id>")
+  .description("잡 켜기")
+  .action((id) => {
+    const { job, jobs } = loadJob(id);
+    writeCronConfig(upsertJob(jobs, { ...job, enabled: true }));
+    console.log(JSON.stringify({ id, enabled: true }, null, 2));
+  });
+cron
+  .command("disable <id>")
+  .description("잡 끄기")
+  .action((id) => {
+    const { job, jobs } = loadJob(id);
+    writeCronConfig(upsertJob(jobs, { ...job, enabled: false }));
+    console.log(JSON.stringify({ id, enabled: false }, null, 2));
+  });
+cron
+  .command("run <id>")
+  .description("잡을 지금 실행한다. TUI가 자식으로 부르는 자리이기도 하다")
+  .option("--fire-at <ms>", "소비할 예정 시각 (기본: 지금)")
+  .option("--claim <rowid>", "TUI가 이미 잡아 둔 cron_runs 행")
+  .option("--force", "이미 돈 예정 시각이어도 지금 시각으로 새로 잡는다")
+  .action(async (id, opts) => {
+    ensureDirs();
+    const { job } = loadJob(id);
+    const now = Date.now();
+    const fireAt = opts.force ? now : opts.fireAt ? Number(opts.fireAt) : now;
+    const db = await openDb(dbPath());
+    try {
+      const res = executeJob({
+        db,
+        job,
+        fireAt,
+        runId: opts.claim ? Number(opts.claim) : null,
+        now,
+      });
+      console.log(JSON.stringify({ ...res, fireAt }, null, 2));
+      if (res.status === "failed") process.exitCode = 1;
+    } finally {
+      db.close();
+    }
+  });
+cron
+  .command("runs")
+  .description("실행 이력")
+  .option("--id <job>", "잡 하나만")
+  .option("--limit <n>", "최대 개수 (기본: 20)")
+  .option("--json", "JSON으로 출력")
+  .action(async (opts) => {
+    ensureDirs();
+    const db = await openDb(dbPath());
+    const rows = db.listCronRuns(opts.id, opts.limit ? Number(opts.limit) : 20);
+    db.close();
+    if (opts.json) {
+      console.log(JSON.stringify(rows, null, 2));
+      return;
+    }
+    for (const r of rows) {
+      const fire = new Date(r.fireAt).toISOString();
+      console.log(`${fire}  ${r.jobId}  ${r.status}  ${r.windowId ?? "-"}  ${r.error ?? ""}`.trimEnd());
+    }
+  });
+cron
+  .command("next")
+  .description("다음 실행 시각만 계산한다 (디버깅)")
+  .option("--at <iso>", "이 시각 기준으로 계산")
+  .action((opts) => {
+    const from = opts.at ? new Date(opts.at).getTime() : Date.now();
+    if (Number.isNaN(from)) throw new Error(`시각을 읽을 수 없습니다: ${opts.at}`);
+    const cfg = readCronConfig();
+    console.log(
+      JSON.stringify(
+        cfg.jobs.map((j) => {
+          const at = nextDue(j.spec, from);
+          return { id: j.id, schedule: j.schedule, nextDue: at === null ? null : new Date(at).toISOString() };
+        }),
+        null,
+        2
+      )
+    );
+  });
+cron
+  .command("tick")
+  .description("한 번 평가하고 실행한 뒤 끝낸다. crontab에 걸어도 된다")
+  .option("--spawn", "실행을 자식 프로세스에 떼어낸다 (기본: 이 프로세스에서 실행)")
+  .action(async (opts) => {
+    ensureDirs();
+    const db = await openDb(dbPath());
+    try {
+      const res = cronTick({ db, now: Date.now(), liveWindowIds: liveWindowIds(), inline: !opts.spawn });
+      console.log(JSON.stringify(res, null, 2));
+    } finally {
+      db.close();
+    }
   });
 
 const ab = program.command("ab").description("맥 브라우저 브리지(ab-bridge) 상태");

@@ -20,7 +20,8 @@ export function setPaneOverride(paneId: string | undefined): void {
   paneOverride = paneId;
 }
 
-function socketPath(): string | undefined {
+// cron이 자식 프로세스를 띄울 때 지금 쓰는 소켓을 그대로 물려주려면 밖에서도 읽어야 한다.
+export function socketPath(): string | undefined {
   if (socketOverride) return socketOverride;
   if (process.env.HIVE_TMUX_SOCKET) return process.env.HIVE_TMUX_SOCKET;
   const tmuxEnv = process.env.TMUX;
@@ -228,15 +229,17 @@ export function capturePaneTail(paneId: string, lines: number): string {
   }
 }
 
-// target을 주지 않으면 지금 클라이언트가 보고 있는 세션에 붙는다. 사람이 부르지 않은 자리
+// session을 주지 않으면 지금 클라이언트가 보고 있는 세션에 붙는다. 사람이 부르지 않은 자리
 // (cron)에서는 붙을 클라이언트가 없거나 엉뚱한 세션일 수 있으므로 세션을 명시한다.
-export function newWindow(opts: { name: string; cwd: string; command: string; target?: string }): string {
+// -t에 세션 이름만 주면 tmux는 그걸 "그 세션의 현재 창"으로 읽어서 인덱스가 겹친다고 거절한다(실측).
+// 뒤에 :를 붙여야 세션 자체를 가리켜 빈 인덱스를 찾아 준다.
+export function newWindow(opts: { name: string; cwd: string; command: string; session?: string }): string {
   return tmux([
     "new-window",
     "-P",
     "-F",
     "#{window_id}",
-    ...(opts.target ? ["-t", opts.target] : []),
+    ...(opts.session ? ["-t", `${opts.session}:`] : []),
     "-n",
     opts.name,
     "-c",
