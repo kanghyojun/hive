@@ -228,8 +228,21 @@ export function capturePaneTail(paneId: string, lines: number): string {
   }
 }
 
-export function newWindow(opts: { name: string; cwd: string; command: string }): string {
-  return tmux(["new-window", "-P", "-F", "#{window_id}", "-n", opts.name, "-c", opts.cwd, opts.command]).trim();
+// target을 주지 않으면 지금 클라이언트가 보고 있는 세션에 붙는다. 사람이 부르지 않은 자리
+// (cron)에서는 붙을 클라이언트가 없거나 엉뚱한 세션일 수 있으므로 세션을 명시한다.
+export function newWindow(opts: { name: string; cwd: string; command: string; target?: string }): string {
+  return tmux([
+    "new-window",
+    "-P",
+    "-F",
+    "#{window_id}",
+    ...(opts.target ? ["-t", opts.target] : []),
+    "-n",
+    opts.name,
+    "-c",
+    opts.cwd,
+    opts.command,
+  ]).trim();
 }
 
 // tmux는 세션 이름에서 ., : 를 특별 취급한다(: 는 target 구분자, . 는 pane 구분자).

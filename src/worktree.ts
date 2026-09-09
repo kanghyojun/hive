@@ -32,12 +32,9 @@ import {
 } from "./tmux.js";
 import { attachSidebar } from "./sidebar.js";
 import { ensureDirs, logsDir, reposPath, selfCommand } from "./paths.js";
+import { shQuote } from "./sh.js";
 
 export { listWorktrees };
-
-function shQuote(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`;
-}
 
 export function findInitScript(repoRoot: string): string | undefined {
   const envScript = process.env.HIVE_INIT_SCRIPT;
@@ -123,10 +120,21 @@ export function wtNew(opts: WtNewOptions): WtNewResult {
   return openWorktreeSession({ path, name: safeBranch, script });
 }
 
-function openWorktreeSession(opts: { path: string; name: string; script?: string }): WtNewResult {
+export interface OpenSessionOptions {
+  path: string;
+  name: string;
+  script?: string;
+  /** 세션의 첫 window에서 돌릴 명령. 없으면 init 스크립트를 돌리고 셸을 남긴다. */
+  command?: string;
+  /** 만든 세션으로 클라이언트를 옮길지. cron처럼 사람이 부르지 않은 자리에서는 반드시 false다. */
+  focus?: boolean;
+}
+
+export function openWorktreeSession(opts: OpenSessionOptions): WtNewResult {
   const [node, cli] = selfCommand();
   const runInitArgs = opts.script ? `${shQuote(opts.path)} ${shQuote(opts.script)}` : shQuote(opts.path);
-  const windowCommand = `${shQuote(node)} ${shQuote(cli)} wt run-init ${runInitArgs}; exec \${SHELL:-sh}`;
+  const windowCommand =
+    opts.command ?? `${shQuote(node)} ${shQuote(cli)} wt run-init ${runInitArgs}; exec \${SHELL:-sh}`;
   // worktree 하나가 세션 하나다. 같은 세션에 window로 붙이면 브랜치를 오갈 때마다 window 목록이 섞인다.
   // 지금 보고 있는 window와 같은 크기로 열지 않으면, 나중에 클라이언트가 붙을 때 tmux가 pane을 비율로
   // 늘려서 사이드바가 화면 절반을 차지한다(tmux.ts의 windowSize 주석 참고).
@@ -142,11 +150,14 @@ function openWorktreeSession(opts: { path: string; name: string; script?: string
 
   // run-shell처럼 붙어 있는 클라이언트가 없는 자리에서 부르면 switch-client가 실패한다.
   // 세션은 이미 만들어졌으니 이동 실패는 결과로만 알리고 넘어간다.
-  let switched = true;
-  try {
-    switchClient(sessionName);
-  } catch {
-    switched = false;
+  let switched = false;
+  if (opts.focus !== false) {
+    try {
+      switchClient(sessionName);
+      switched = true;
+    } catch {
+      switched = false;
+    }
   }
 
   return { path: opts.path, sessionName, windowId, switched };
