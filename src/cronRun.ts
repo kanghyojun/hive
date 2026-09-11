@@ -4,11 +4,11 @@ import { hostname } from "node:os";
 import { resolve } from "node:path";
 import { planCronTick, readCronConfig, type CronJob } from "./cron.js";
 import { renderTemplate } from "./cronSpec.js";
-import type { Db } from "./db.js";
+import { processStart, type Db } from "./db.js";
 import { resolveRepo, worktreeAdd } from "./git.js";
 import { cronLogPath, ensureDirs, hiveHome, selfCommand } from "./paths.js";
 import { shQuote } from "./sh.js";
-import { listPanes, newWindow, socketPath } from "./tmux.js";
+import { listPanes, newWindow, serverInfo, serverKey, socketPath } from "./tmux.js";
 import { findInitScript, openWorktreeSession, rememberRepo, windowsInWorktree, worktreePathFor } from "./worktree.js";
 
 // claude는 위치 인자로 프롬프트를 받으면 대화형으로 시작한다(-p가 아니다). 그래서 창이 남고,
@@ -69,11 +69,15 @@ export interface ExecuteResult {
   error?: string;
 }
 
+export function cronServerKey(): string | undefined {
+  try { return serverKey(serverInfo()); } catch { return undefined; }
+}
+
 function claimTag(): string {
   return `${hostname()}:${process.pid}`;
 }
 
-// TUI가 claim한 뒤 자식으로 부르는 자리이자, hive cron run이 손으로 부르는 자리다.
+// 수집기가 claim한 뒤 자식으로 부르는 자리이자, hive cron run이 손으로 부르는 자리다.
 // 두 경로가 같은 코드를 타야 "손으로 한 번 돌려보기"가 진짜 검증이 된다.
 export function executeJob(o: {
   db: Db;
@@ -81,11 +85,12 @@ export function executeJob(o: {
   fireAt: number;
   runId?: number | null;
   now?: number;
+  serverKey?: string;
 }): ExecuteResult {
   const now = o.now ?? Date.now();
   let runId = o.runId ?? null;
   if (runId === null) {
-    runId = o.db.claimCronRun({ jobId: o.job.id, fireAt: o.fireAt, startedAt: now, claimedBy: claimTag() });
+    runId = o.db.claimCronRun({ jobId: o.job.id, fireAt: o.fireAt, startedAt: now, claimedBy: claimTag(), serverKey: o.serverKey });
     if (runId === null) return { status: "skipped", runId: null };
   }
 
@@ -93,7 +98,14 @@ export function executeJob(o: {
     const { cwd } = resolveJobCwd(o.job, o.fireAt);
     const command = buildLaunchCommand(o.job, initPrefixFor(o.job, cwd));
     const { sessionName, windowId } = launchJob(o.job, cwd, command);
-    o.db.markCronRun(runId, { status: "launched", sessionName, windowId, cwd });
+    let launchedServerKey = o.serverKey;
+    let serverStart: string | undefined;
+    try {
+      const server = serverInfo();
+      launchedServerKey = serverKey(server);
+      serverStart = processStart(Number(server.pid)) ?? undefined;
+    } catch { /* 서버 조회 실패만으로 이미 실행한 잡을 실패로 바꾸지 않는다. */ }
+    o.db.markCronRun(runId, { status: "launched", sessionName, windowId, cwd, serverKey: launchedServerKey, serverStart });
     return { status: "launched", runId, cwd, sessionName, windowId };
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
@@ -108,15 +120,17 @@ export interface CronTickResult {
   errors: string[];
 }
 
-// TUI는 claim만 하고 실제 실행은 떼어낸 자식에게 맡긴다. git worktree add와 tmux new-session은
-// 전부 동기 호출이라 1초 tick 안에서 부르면 사이드바가 그동안 얼어붙는다.
+// 수집기는 claim만 하고 실제 실행은 떼어낸 자식에게 맡긴다. git worktree add와 tmux new-session은
+// 전부 동기 호출이라 수집 tick 안에서 부르면 그동안 새 상태를 발행하지 못한다.
 function spawnRunner(jobId: string, fireAt: number, runId: number): void {
   const [node, cli] = selfCommand();
-  const args = [cli, "--home", hiveHome()];
+  const args = [...process.execArgv, cli, "--home", hiveHome()];
   const socket = socketPath();
   if (socket) args.push("--tmux-socket", socket);
   args.push("cron", "run", jobId, "--fire-at", String(fireAt), "--claim", String(runId));
-  spawn(node, args, { detached: true, stdio: "ignore" }).unref();
+  const child = spawn(node, args, { detached: true, stdio: "ignore" });
+  child.on("error", (err) => logCronError(err.message));
+  child.unref();
 }
 
 export function logCronError(message: string): void {
@@ -128,15 +142,16 @@ export function logCronError(message: string): void {
   }
 }
 
-// TUI tick과 hive cron tick이 같이 쓴다. inline이면 이 프로세스에서 바로 실행한다.
+// 수집기 tick과 hive cron tick이 같이 쓴다. inline이면 이 프로세스에서 바로 실행한다.
 export function cronTick(a: {
   db: Db;
   now: number;
   liveWindowIds: string[];
   inline?: boolean;
+  serverKey?: string;
 }): CronTickResult {
   const out: CronTickResult = { reaped: 0, launched: [], errors: [] };
-  out.reaped = a.db.reapCronRuns({ liveWindowIds: a.liveWindowIds, now: a.now });
+  out.reaped = a.db.reapCronRuns({ liveWindowIds: a.liveWindowIds, now: a.now, serverKey: a.serverKey });
 
   const cfg = readCronConfig();
   out.errors.push(...cfg.errors);
@@ -156,11 +171,12 @@ export function cronTick(a: {
       fireAt: item.fireAt,
       startedAt: a.now,
       claimedBy: claimTag(),
+      serverKey: a.serverKey,
     });
     if (runId === null) continue;
 
     if (a.inline) {
-      const res = executeJob({ db: a.db, job: item.job, fireAt: item.fireAt, runId, now: a.now });
+      const res = executeJob({ db: a.db, job: item.job, fireAt: item.fireAt, runId, now: a.now, serverKey: a.serverKey });
       if (res.status === "launched") out.launched.push({ jobId: item.job.id, fireAt: item.fireAt, runId });
       else out.errors.push(`${item.job.id}: ${res.error ?? res.status}`);
       continue;

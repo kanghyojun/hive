@@ -66,7 +66,7 @@ import {
   type CronWorktree,
 } from "./cron.js";
 import { nextDue, parseCron } from "./cronSpec.js";
-import { cronTick, executeJob } from "./cronRun.js";
+import { cronServerKey, cronTick, executeJob } from "./cronRun.js";
 import { ingestAll } from "./spool.js";
 import { effectiveState, reduceAgent } from "./state.js";
 
@@ -453,9 +453,9 @@ cron
   });
 cron
   .command("run <id>")
-  .description("잡을 지금 실행한다. TUI가 자식으로 부르는 자리이기도 하다")
+  .description("잡을 지금 실행한다. 수집기가 자식으로 부르는 자리이기도 하다")
   .option("--fire-at <ms>", "소비할 예정 시각 (기본: 지금)")
-  .option("--claim <rowid>", "TUI가 이미 잡아 둔 cron_runs 행")
+  .option("--claim <rowid>", "수집기가 이미 잡아 둔 cron_runs 행")
   .option("--force", "이미 돈 예정 시각이어도 지금 시각으로 새로 잡는다")
   .action(async (id, opts) => {
     ensureDirs();
@@ -469,6 +469,7 @@ cron
         job,
         fireAt,
         runId: positiveInt(opts.claim, "--claim") ?? null,
+        serverKey: cronServerKey(),
         now,
       });
       console.log(JSON.stringify({ ...res, fireAt }, null, 2));
@@ -524,7 +525,7 @@ cron
     ensureDirs();
     const db = await openDb(dbPath());
     try {
-      const res = cronTick({ db, now: Date.now(), liveWindowIds: liveWindowIds(), inline: !opts.spawn });
+      const res = cronTick({ db, now: Date.now(), liveWindowIds: liveWindowIds(), inline: !opts.spawn, serverKey: cronServerKey() });
       console.log(JSON.stringify(res, null, 2));
     } finally {
       db.close();

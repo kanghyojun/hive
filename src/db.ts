@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { promptTitle } from "./state.js";
 import type { AgentRecord, AgentState } from "./state.js";
 
@@ -42,11 +43,15 @@ export interface CronRunRow {
   windowId: string | null;
   cwd: string | null;
   claimedBy: string | null;
+  serverKey: string | null;
+  serverStart: string | null;
   error: string | null;
 }
 
 export interface CronRunPatch {
   status: CronRunStatus;
+  serverKey?: string;
+  serverStart?: string;
   finishedAt?: number;
   sessionName?: string;
   windowId?: string;
@@ -69,12 +74,15 @@ export interface Db {
   setSeenState(serverKey: string, windowId: string, state: string): void;
   pruneWindowFlags(serverKey: string, liveWindowIds: string[]): void;
   /** 이 (jobId, fireAt)을 처음 잡은 쪽에만 rowid를 준다. 이미 잡혔으면 null. */
-  claimCronRun(row: { jobId: string; fireAt: number; startedAt: number; claimedBy: string }): number | null;
+  claimCronRun(row: { jobId: string; fireAt: number; startedAt: number; claimedBy: string; serverKey?: string }): number | null;
   markCronRun(id: number, patch: CronRunPatch): void;
   lastFireByJob(): Map<string, number>;
   runningCronRuns(): CronRunRow[];
   listCronRuns(jobId?: string, limit?: number): CronRunRow[];
-  reapCronRuns(a: { liveWindowIds: string[]; now: number }): number;
+  reapCronRuns(a: { liveWindowIds: string[]; now: number; serverKey?: string }): number;
+  acquireCollectorOwner(serverKey: string, owner: CollectorOwner): boolean;
+  releaseCollectorOwner(serverKey: string, token: string): void;
+  migrateWindowFlags(legacyKey: string, serverKey: string, liveWindowIds: string[]): void;
   transaction<T>(fn: () => T): T;
   close(): void;
 }
@@ -131,10 +139,19 @@ CREATE TABLE IF NOT EXISTS cron_runs (
   window_id TEXT,
   cwd TEXT,
   claimed_by TEXT,
+  server_key TEXT,
+  server_start TEXT,
   error TEXT,
   -- 사이드바가 여러 개 떠 있어도 같은 예정 시각을 두 번 실행하지 않게 막는 제약이다.
   UNIQUE(job_id, fire_at)
 );
+CREATE TABLE IF NOT EXISTS collector_owners (
+  server_key TEXT PRIMARY KEY,
+  owner_pid INTEGER NOT NULL,
+  owner_start TEXT NOT NULL,
+  owner_token TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS window_flags_migrations (server_key TEXT PRIMARY KEY);
 CREATE INDEX IF NOT EXISTS cron_runs_job_fire ON cron_runs(job_id, fire_at DESC);
 `;
 
@@ -146,6 +163,9 @@ const CRON_LAUNCH_GRACE_MS = 30_000;
 // 이미 만들어진 DB에는 CREATE TABLE IF NOT EXISTS가 컬럼을 더해주지 않는다.
 // 아직 몇 개뿐이라 직접 확인하고 붙인다. 더 늘어나면 버전 테이블로 바꾼다.
 function migrate(raw: DatabaseSync): void {
+  const cronCols = raw.prepare("PRAGMA table_info(cron_runs)").all() as { name: string }[];
+  if (!cronCols.some((c) => c.name === "server_key")) raw.exec("ALTER TABLE cron_runs ADD COLUMN server_key TEXT");
+  if (!cronCols.some((c) => c.name === "server_start")) raw.exec("ALTER TABLE cron_runs ADD COLUMN server_start TEXT");
   const agentCols = raw.prepare("PRAGMA table_info(agents)").all() as { name: string }[];
   if (!agentCols.some((c) => c.name === "title")) {
     raw.exec("ALTER TABLE agents ADD COLUMN title TEXT");
@@ -201,9 +221,17 @@ export async function openDb(path: string): Promise<Db> {
   raw.exec("PRAGMA busy_timeout = 5000");
   raw.exec("PRAGMA journal_mode = WAL");
   raw.exec("PRAGMA synchronous = NORMAL");
-  raw.exec(SCHEMA);
-  migrate(raw);
-  backfillTitles(raw);
+  raw.exec("BEGIN IMMEDIATE");
+  try {
+    raw.exec(SCHEMA);
+    migrate(raw);
+    backfillTitles(raw);
+    raw.exec("COMMIT");
+  } catch (err) {
+    raw.exec("ROLLBACK");
+    raw.close();
+    throw err;
+  }
 
   const stmts = {
     getOffset: raw.prepare("SELECT offset FROM spool_offsets WHERE spool_file = ?"),
@@ -242,8 +270,8 @@ export async function openDb(path: string): Promise<Db> {
        ON CONFLICT(server_key, window_id) DO UPDATE SET seen_state = excluded.seen_state`
     ),
     claimCronRun: raw.prepare(
-      `INSERT OR IGNORE INTO cron_runs(job_id, fire_at, started_at, status, claimed_by)
-       VALUES(?, ?, ?, 'claimed', ?)`
+      `INSERT OR IGNORE INTO cron_runs(job_id, fire_at, started_at, status, claimed_by, server_key)
+       VALUES(?, ?, ?, 'claimed', ?, ?)`
     ),
     markCronRun: raw.prepare(
       `UPDATE cron_runs SET
@@ -252,7 +280,9 @@ export async function openDb(path: string): Promise<Db> {
          session_name = COALESCE(@sessionName, session_name),
          window_id = COALESCE(@windowId, window_id),
          cwd = COALESCE(@cwd, cwd),
-         error = COALESCE(@error, error)
+         error = COALESCE(@error, error),
+         server_key = COALESCE(@serverKey, server_key),
+         server_start = COALESCE(@serverStart, server_start)
        WHERE id = @id`
     ),
     lastFireByJob: raw.prepare("SELECT job_id, MAX(fire_at) AS fire_at FROM cron_runs GROUP BY job_id"),
@@ -282,6 +312,8 @@ export async function openDb(path: string): Promise<Db> {
       windowId: (row.window_id as string | null) ?? null,
       cwd: (row.cwd as string | null) ?? null,
       claimedBy: (row.claimed_by as string | null) ?? null,
+      serverKey: (row.server_key as string | null) ?? null,
+      serverStart: (row.server_start as string | null) ?? null,
       error: (row.error as string | null) ?? null,
     };
   }
@@ -303,7 +335,7 @@ export async function openDb(path: string): Promise<Db> {
     };
   }
 
-  return {
+  const db: Db = {
     raw,
     getOffset(spoolFile) {
       const row = stmts.getOffset.get(spoolFile) as { offset: number } | undefined;
@@ -379,13 +411,15 @@ export async function openDb(path: string): Promise<Db> {
     },
     claimCronRun(row) {
       // UNIQUE(job_id, fire_at) 덕에 이 한 줄이 곧 락이다. 사이드바가 몇 개든 하나만 changes=1을 받는다.
-      const res = stmts.claimCronRun.run(row.jobId, row.fireAt, row.startedAt, row.claimedBy);
+      const res = stmts.claimCronRun.run(row.jobId, row.fireAt, row.startedAt, row.claimedBy, row.serverKey ?? null);
       return Number(res.changes) === 1 ? Number(res.lastInsertRowid) : null;
     },
     markCronRun(id, patch) {
       stmts.markCronRun.run({
         id,
         status: patch.status,
+        serverKey: patch.serverKey ?? null,
+        serverStart: patch.serverStart ?? null,
         finishedAt: patch.finishedAt ?? null,
         sessionName: patch.sessionName ?? null,
         windowId: patch.windowId ?? null,
@@ -415,11 +449,51 @@ export async function openDb(path: string): Promise<Db> {
         const stmt = raw.prepare(
           `UPDATE cron_runs SET status = 'done', finished_at = ?
            WHERE status = 'launched' AND started_at < ?
-             AND (window_id IS NULL OR window_id NOT IN (${placeholders}))`
+             AND (window_id IS NULL OR window_id NOT IN (${placeholders}))
+             AND (server_key IS NULL OR server_key = ?)`
         );
-        changed += Number(stmt.run(a.now, a.now - CRON_LAUNCH_GRACE_MS, ...a.liveWindowIds).changes);
+        changed += Number(stmt.run(a.now, a.now - CRON_LAUNCH_GRACE_MS, ...a.liveWindowIds, a.serverKey ?? null).changes);
+      }
+      // 수집기와 tmux를 함께 죽여도 이전 실행이 overlap:skip을 영구히 막으면 안 된다.
+      // 다른 서버의 pane 목록은 쓰지 않고, 종료되거나 PID가 재사용된 프로세스만 확인한다.
+      const servers = raw.prepare(`SELECT DISTINCT server_key, server_start FROM cron_runs
+        WHERE status = 'launched' AND server_key IS NOT NULL`).all() as { server_key: string; server_start: string | null }[];
+      for (const server of servers) {
+        let identity: unknown;
+        try { identity = JSON.parse(server.server_key); } catch { continue; }
+        if (!Array.isArray(identity) || identity.length !== 3 || !identity.every((v) => typeof v === "string")
+          || !identity[0].startsWith("/") || !/^\d+$/.test(identity[1]) || !/^\d+$/.test(identity[2])) continue;
+        const pid = Number(identity[1]);
+        if (!Number.isSafeInteger(pid) || pid <= 0 || processMatches(pid, server.server_start)) continue;
+        changed += Number(raw.prepare(`UPDATE cron_runs SET status = 'done', finished_at = ?
+          WHERE status = 'launched' AND server_key = ? AND server_start IS ?`)
+          .run(a.now, server.server_key, server.server_start).changes);
       }
       return changed;
+    },
+    acquireCollectorOwner(serverKey, owner) {
+      return this.transaction(() => {
+        const old = raw.prepare("SELECT owner_pid, owner_start FROM collector_owners WHERE server_key = ?")
+          .get(serverKey) as { owner_pid: number; owner_start: string } | undefined;
+        if (old && processMatches(old.owner_pid, old.owner_start)) return false;
+        raw.prepare(`INSERT INTO collector_owners(server_key, owner_pid, owner_start, owner_token) VALUES (?, ?, ?, ?)
+          ON CONFLICT(server_key) DO UPDATE SET owner_pid = excluded.owner_pid,
+            owner_start = excluded.owner_start, owner_token = excluded.owner_token`)
+          .run(serverKey, owner.pid, owner.start, owner.token);
+        return true;
+      });
+    },
+    releaseCollectorOwner(serverKey, token) {
+      raw.prepare("DELETE FROM collector_owners WHERE server_key = ? AND owner_token = ?").run(serverKey, token);
+    },
+    migrateWindowFlags(legacyKey, serverKey, liveWindowIds) {
+      this.transaction(() => {
+        if (raw.prepare("SELECT 1 FROM window_flags_migrations WHERE server_key = ?").get(serverKey)) return;
+        const copy = raw.prepare(`INSERT OR IGNORE INTO window_flags(server_key, window_id, sleep, unread, seen_state)
+          SELECT ?, window_id, sleep, unread, seen_state FROM window_flags WHERE server_key = ? AND window_id = ?`);
+        for (const id of liveWindowIds) copy.run(serverKey, legacyKey, id);
+        raw.prepare("INSERT INTO window_flags_migrations(server_key) VALUES (?)").run(serverKey);
+      });
     },
     transaction(fn) {
       raw.exec("BEGIN IMMEDIATE");
@@ -436,4 +510,40 @@ export async function openDb(path: string): Promise<Db> {
       raw.close();
     },
   };
+  return db;
+}
+
+export interface CollectorOwner { pid: number; start: string; token: string }
+
+export function processStart(pid: number): string | null {
+  try {
+    const out = execFileSync("ps", ["-p", String(pid), "-o", "stat=", "-o", "lstart="], {
+      encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 3000,
+      env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
+    }).trim();
+    const match = /^(\S+)\s+(.+)$/.exec(out);
+    if (!match || match[1].startsWith("Z")) return null;
+    return match[2].trim();
+  } catch {
+    return null;
+  }
+}
+
+export function processMatches(pid: number, start: string | null): boolean {
+  try { process.kill(pid, 0); } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === "ESRCH") return false;
+  }
+  try {
+    const out = execFileSync("ps", ["-p", String(pid), "-o", "stat=", "-o", "lstart="], {
+      encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 3000,
+      env: { ...process.env, LC_ALL: "C", TZ: "UTC" },
+    }).trim();
+    const match = /^(\S+)\s+(.+)$/.exec(out);
+    if (!match) return true;
+    if (match[1].startsWith("Z")) return false;
+    return start === null || match[2].trim() === start;
+  } catch {
+    // ps를 못 읽었다는 이유만으로 살아 있는 owner의 소켓을 회수하면 안 된다.
+    return true;
+  }
 }

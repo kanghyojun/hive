@@ -1,11 +1,6 @@
-import { readFileSync, writeFileSync } from "node:fs";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Box, Text, useApp, useInput, useStdin, useWindowSize } from "ink";
-import { openDb, type Db } from "../db.js";
-import { ingestAll } from "../spool.js";
 import {
-  reduceAgent,
-  looksLikePermissionPrompt,
   AGENT_GLYPH,
   AGENT_GLYPH_WIDTH,
   HIDE_GLYPH_WHEN_UNIFORM,
@@ -13,17 +8,13 @@ import {
   type AgentState,
 } from "../state.js";
 import { basename } from "node:path";
-import { listWorktrees, resolveRepo, type RepoInfo } from "../git.js";
-import { buildRows,
-  unreadUpdates, readWindowIds, resolvePaneAgents, type Row, type ViewMode } from "../model.js";
+import { listWorktrees } from "../git.js";
+import type { Row, ViewMode } from "../model.js";
 import { fitSegments, statusSegments, STATUS_SEP } from "./statusbar.js";
 import {
-  capturePaneTail,
   listPanes,
-  listProcesses,
   selectWindow,
   resizePaneWidth,
-  serverInfo,
   switchClient,
   currentSessionName,
   selectPane,
@@ -51,28 +42,13 @@ import {
   type PullRequest,
 } from "../githubPr.js";
 import { jumpIndex, jumpLabel, jumpLabelWidth, JUMP_PREFIX } from "../jump.js";
-import {
-  abConfigPath,
-  abLocalInstalled,
-  parseAbConfig,
-  probeAbBridge,
-  type AbStatus,
-} from "../abBridge.js";
-import { formatUsageLines, readClaudeUsage, readCodexUsage, type AgentUsage } from "../usage.js";
-import { dbPath, spoolDir, uiStatePath, ensureDirs } from "../paths.js";
-import { cronTick, logCronError } from "../cronRun.js";
+import type { AbStatus } from "../abBridge.js";
+import { formatUsageLines, type AgentUsage } from "../usage.js";
+import { CollectorClient, type CollectorStatus } from "../collectorClient.js";
+import type { CollectorCommand } from "../collectorProtocol.js";
 
-const TICK_MS = 1000;
-const SCREEN_CHECK_MS = 3000;
-const SCREEN_TAIL_LINES = 25;
 const REPO_CANDIDATE_MAX = 8;
-const AB_PROBE_MS = 30_000;
-// cron 판정은 예정 시각 기준이라 11:00:00에 보든 11:00:29에 보든 같은 fire를 소비한다.
-// 그래서 1초마다 볼 이유가 없다.
-const CRON_CHECK_MS = 30_000;
-// PR은 30개까지 받아오는데 footer는 잘려 나가므로 repoInput처럼 창을 내어 보여준다.
 const PR_CANDIDATE_MAX = 8;
-const USAGE_REFRESH_MS = 30_000;
 
 /**
  * path가 없으면 "그 저장소에 새 worktree 만들기" 항목이고,
@@ -161,42 +137,17 @@ function clip(text: string, width: number): string {
   return out;
 }
 
-function loadMode(): ViewMode {
-  try {
-    const raw = JSON.parse(readFileSync(uiStatePath(), "utf8"));
-    return raw.mode === "group" ? "group" : "recent";
-  } catch {
-    return "recent";
-  }
-}
-
-function saveMode(mode: ViewMode): void {
-  try {
-    writeFileSync(uiStatePath(), JSON.stringify({ mode }));
-  } catch {
-    // 저장 실패는 무시. 다음 실행에 기본값(recent)으로 돌아간다.
-  }
-}
-
 export function App(): React.JSX.Element {
   const { exit } = useApp();
   const { stdin, isRawModeSupported } = useStdin();
   const { columns, rows: termRows } = useWindowSize();
 
-  const dbRef = useRef<Db | null>(null);
-  const screenWaitingRef = useRef<Set<string>>(new Set());
-  const lastScreenCheckRef = useRef(0);
-  const lastCronCheckRef = useRef(0);
-  // 설정 오타 하나로 30초마다 같은 줄이 로그에 쌓이지 않게 직전 내용과 비교한다.
-  const lastCronErrorRef = useRef("");
-  // ps 전체 조회는 1초 tick마다 돌릴 만큼 싸지 않아서 화면 확인과 같은 주기로 갱신한다.
-  const paneAgentsRef = useRef<Map<string, AgentKind>>(new Map());
-
+  const clientRef = useRef<CollectorClient | null>(null);
+  const [collectorStatus, setCollectorStatus] = useState<CollectorStatus>({ connected: false, stale: true, error: null });
   const [rows, setRows] = useState<Row[]>([]);
-  const [mode, setMode] = useState<ViewMode>(() => loadMode());
+  const [mode, setMode] = useState<ViewMode>("recent");
   // 인덱스가 아니라 key로 들고 있어야 tick마다 정렬이 바뀌어도 선택이 다른 window로 미끄러지지 않는다.
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const [error, setError] = useState<string | null>(null);
   const [branchInput, setBranchInput] = useState<string | null>(null);
   const [statusMsg, setStatusMsg] = useState<string | null>(null);
   const [showHelp, setShowHelp] = useState(false);
@@ -218,7 +169,7 @@ export function App(): React.JSX.Element {
   const [usage, setUsage] = useState<AgentUsage[]>([]);
   // picker에서 "+ 새 worktree"를 고르면 커서 행이 아니라 그 저장소에 만들어야 한다.
   const branchRepoRef = useRef<string | null>(null);
-  // 키 핸들러에서도 pane 목록이 필요한데 tick의 panes는 지역 변수라 못 쓴다.
+  // 작업 삭제와 이동 입력도 수집기가 보낸 pane 목록을 사용한다.
   const panesRef = useRef<PaneInfo[]>([]);
   const [frame, setFrame] = useState(0);
   // Ctrl-L 강제 새로고침용. ink는 출력이 이전과 같으면 아예 쓰지 않아서,
@@ -231,143 +182,29 @@ export function App(): React.JSX.Element {
   // 사이드바가 들어 있는 창이 곧 지금 보고 있는 창이다. 선택 커서와 헷갈리지 않게 따로 표시한다.
   const [currentWindowId, setCurrentWindowId] = useState<string | null>(null);
 
-  const repoCacheRef = useRef(new Map<string, RepoInfo | null>());
-
-  const tick = useCallback(async () => {
-    try {
-      const db = dbRef.current;
-      if (!db) return;
-
-      ingestAll(db, spoolDir(), reduceAgent);
-
-      const panes = listPanes();
-      panesRef.current = panes;
-      const server = serverInfo();
-      const liveWindowIds = [...new Set(panes.map((p) => p.windowId))];
-      db.pruneWindowFlags(server.startTime, liveWindowIds);
-
-      const now = Date.now();
-      if (now - lastScreenCheckRef.current > SCREEN_CHECK_MS) {
-        lastScreenCheckRef.current = now;
-        paneAgentsRef.current = resolvePaneAgents(panes, listProcesses());
-        const nextWaiting = new Set<string>();
-        for (const pane of panes) {
-          if (!paneAgentsRef.current.has(pane.paneId)) continue;
-          const tail = capturePaneTail(pane.paneId, SCREEN_TAIL_LINES);
-          if (looksLikePermissionPrompt(tail)) nextWaiting.add(pane.paneId);
-        }
-        screenWaitingRef.current = nextWaiting;
-      }
-
-      if (now - lastCronCheckRef.current > CRON_CHECK_MS) {
-        lastCronCheckRef.current = now;
-        // 여기서 던지면 아래 catch가 setError를 불러 사이드바가 통째로 에러 화면이 된다.
-        // cron.json 오타 하나에 그럴 수는 없으니 삼키고 로그로만 남긴다.
-        try {
-          const cron = cronTick({ db, now, liveWindowIds });
-          const joined = cron.errors.join(" | ");
-          if (joined && joined !== lastCronErrorRef.current) logCronError(joined);
-          lastCronErrorRef.current = joined;
-        } catch (err) {
-          logCronError(err instanceof Error ? err.message : String(err));
-        }
-      }
-
-      const repoByCwd = repoCacheRef.current;
-      for (const cwd of new Set(panes.map((p) => p.paneCurrentPath))) {
-        if (!repoByCwd.has(cwd)) repoByCwd.set(cwd, resolveRepo(cwd));
-      }
-
-      // 사이드바가 여러 개 떠 있을 수 있다(세션마다, 또는 tmux 서버마다).
-      // 정렬 모드는 ui.json 한 곳에 있으니 매 tick 다시 읽어서 어디서 바꾸든 1초 안에 맞춰진다.
-      const savedMode = loadMode();
-      if (savedMode !== mode) setMode(savedMode);
-
-      const flags = db.getWindowFlags(server.startTime);
-      const myPane = currentPaneId();
-      const myWindowId = panes.find((p) => p.paneId === myPane)?.windowId ?? null;
-
-      const nextRows = buildRows({
-        panes,
-        agents: db.listAgents(),
-        repoByCwd,
-        sleepMap: new Map([...flags].map(([id, f]) => [id, f.sleep])),
-        unreadMap: new Map([...flags].map(([id, f]) => [id, f.unread])),
-        agentByPane: paneAgentsRef.current,
-        now,
-        mode: savedMode,
-        tmuxPid: server.pid,
-        screenWaitingPanes: screenWaitingRef.current,
-      });
-
-      // 상태가 바뀐 창에 안 읽음을 켠다. 방금 켠 건 다음 tick을 기다리지 않고 이번 프레임에 바로 그린다.
-      // "사람이 보고 있는 창"은 자기 창이 아니라 tmux 전체에서 뽑는다. 사이드바는 세션마다 하나씩
-      // 떠서 같은 DB에 쓰기 때문에, 자기 창 기준으로 판정하면 사이드바끼리 알림을 지운다(model.ts 주석).
-      const viewedWindowIds = new Set(
-        panes.filter((p) => p.windowActive && p.sessionAttached).map((p) => p.windowId)
-      );
-      const justUnread = new Set<string>();
-      for (const u of unreadUpdates({
-        rows: nextRows,
-        seenStates: new Map([...flags].map(([id, f]) => [id, f.seenState])),
-        viewedWindowIds,
-      })) {
-        db.setSeenState(server.startTime, u.windowId, u.seenState);
-        if (!u.unread) continue;
-        db.setUnread(server.startTime, u.windowId, true);
-        justUnread.add(u.windowId);
-      }
-
-      // 보고 있는 창에 남아 있는 안 읽음은 지운다. 켤 때와 기준이 같아서 새로 켠 표시를 되돌리는
-      // 일은 없다. 사이드바에서 점프해 들어갈 때만 꺼주면, tmux로 직접 옮겨 다닌 창은 표시가
-      // 영영 안 꺼져서 지금 보고 앉은 창에 막대가 남는다(model.ts readWindowIds 주석).
-      const justRead = new Set(readWindowIds({ rows: nextRows, viewedWindowIds }));
-      for (const windowId of justRead) db.setUnread(server.startTime, windowId, false);
-
-      setCurrentWindowId(myWindowId);
-
-      setRows(
-        justUnread.size === 0 && justRead.size === 0
-          ? nextRows
-          : nextRows.map((r) => {
-              if (justUnread.has(r.windowId)) return { ...r, unread: true };
-              if (justRead.has(r.windowId)) return { ...r, unread: false };
-              return r;
-            })
-      );
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
-    }
-  }, [mode]);
-
-  // setInterval이 마운트 시점의 tick을 클로저로 잡으면 mode를 바꿔도 1초 뒤 옛 mode로 덮어쓴다.
-  // 타이머는 한 번만 걸고, 호출은 항상 최신 tick으로 한다.
-  const tickRef = useRef(tick);
-  useEffect(() => {
-    tickRef.current = tick;
-  }, [tick]);
-
-  useEffect(() => {
-    let timer: NodeJS.Timeout | undefined;
-    ensureDirs();
-    openDb(dbPath())
-      .then((db) => {
-        dbRef.current = db;
-        void tickRef.current();
-        timer = setInterval(() => void tickRef.current(), TICK_MS);
-      })
-      .catch((err) => setError(err instanceof Error ? err.message : String(err)));
-    return () => {
-      if (timer) clearInterval(timer);
-      dbRef.current?.close();
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  const sendCommand = useCallback((command: CollectorCommand) => {
+    const client = clientRef.current;
+    if (!client) return;
+    void client.command(command).catch((err) => setStatusMsg(err instanceof Error ? err.message : String(err)));
   }, []);
+  const tick = useCallback(() => sendCommand({ type: "refresh" }), [sendCommand]);
 
   useEffect(() => {
-    void tick();
-  }, [mode, tick]);
+    const client = new CollectorClient({
+      onSnapshot: (snapshot) => {
+        panesRef.current = snapshot.panes;
+        setCurrentWindowId(snapshot.panes.find((p) => p.paneId === client.paneId)?.windowId ?? null);
+        setRows(snapshot.rows);
+        setMode(snapshot.mode);
+        setAb(snapshot.ab);
+        setUsage(snapshot.usage);
+      },
+      onStatus: setCollectorStatus,
+    });
+    clientRef.current = client;
+    client.start();
+    return () => { client.close(); clientRef.current = null; };
+  }, []);
 
   const windowRows = rows.filter((r) => r.kind === "window");
   const hasWorking = windowRows.some((r) => r.state === "working" && !r.sleep);
@@ -440,14 +277,7 @@ export function App(): React.JSX.Element {
       if (row.agentPaneId) selectPane(row.agentPaneId);
       // 직접 들어간 창은 더 이상 자는 창이 아니다. 여기서 풀어주지 않으면 목록 맨 아래 어두운 자리에
       // 지금 보고 있는 창이 남아서, s를 한 번 더 눌러야 제자리로 온다.
-      const db = dbRef.current;
-      if (db && (row.sleep || row.unread)) {
-        const serverKey = serverInfo().startTime;
-        if (row.sleep) db.setSleep(serverKey, row.windowId, false);
-        // 들어가 본 창은 읽은 창이다.
-        if (row.unread) db.setUnread(serverKey, row.windowId, false);
-        void tickRef.current();
-      }
+      sendCommand({ type: "activate", windowId: row.windowId });
       // 옮겨갔으면 커서는 할 일이 끝났다. 그 창은 이제 "지금 창"(청록)으로 표시된다.
       setSelectedKey(null);
     } catch (err) {
@@ -456,28 +286,16 @@ export function App(): React.JSX.Element {
   }, []);
 
   const toggleSleep = useCallback(() => {
-    const db = dbRef.current;
-    if (!actionRow || !db) return;
-    const server = serverInfo();
-    db.setSleep(server.startTime, actionRow.windowId, !actionRow.sleep);
-    void tick();
-  }, [actionRow, tick]);
+    if (actionRow) sendCommand({ type: "toggleSleep", windowId: actionRow.windowId });
+  }, [actionRow, sendCommand]);
 
-  // 지금 볼 여유가 없는 창을 도로 안 읽음으로 돌려놓거나, 표시만 지우고 싶을 때 쓴다.
   const toggleUnread = useCallback(() => {
-    const db = dbRef.current;
-    if (!actionRow || !db) return;
-    db.setUnread(serverInfo().startTime, actionRow.windowId, !actionRow.unread);
-    void tick();
-  }, [actionRow, tick]);
+    if (actionRow) sendCommand({ type: "toggleUnread", windowId: actionRow.windowId });
+  }, [actionRow, sendCommand]);
 
   const toggleMode = useCallback(() => {
-    setMode((m) => {
-      const next: ViewMode = m === "recent" ? "group" : "recent";
-      saveMode(next);
-      return next;
-    });
-  }, []);
+    sendCommand({ type: "setMode", mode: mode === "recent" ? "group" : "recent" });
+  }, [mode, sendCommand]);
 
   const submitBranch = useCallback(
     (branch: string) => {
@@ -660,41 +478,8 @@ export function App(): React.JSX.Element {
     setBranchInput("");
   }, []);
 
-  // ab-local이 없는 머신에서는 표시 자체를 하지 않는다.
   useEffect(() => {
-    if (!abLocalInstalled()) return;
-    let raw: string | undefined;
-    try {
-      raw = readFileSync(abConfigPath(), "utf8");
-    } catch {
-      // 설정 파일이 없으면 ab-bridge 기본값으로 돈다.
-    }
-    const cfg = parseAbConfig(raw);
-    let inFlight = false;
-    const probe = () => {
-      if (inFlight) return;
-      inFlight = true;
-      probeAbBridge(cfg)
-        .then((r) => setAb(r.status))
-        .catch(() => setAb("down"))
-        .finally(() => {
-          inFlight = false;
-        });
-    };
-    probe();
-    const timer = setInterval(probe, AB_PROBE_MS);
-    return () => clearInterval(timer);
-  }, []);
-
-  // 뷰가 꺼져 있으면 파일을 전혀 읽지 않는다.
-  useEffect(() => {
-    if (!showUsage) return;
-    const refresh = () => {
-      setUsage([readClaudeUsage(), readCodexUsage()].filter((u): u is AgentUsage => u !== null));
-    };
-    refresh();
-    const timer = setInterval(refresh, USAGE_REFRESH_MS);
-    return () => clearInterval(timer);
+    clientRef.current?.setUsageInterest(showUsage);
   }, [showUsage]);
 
   // ink는 증분 렌더를 하면서 "커서가 이전 프레임의 마지막 줄에 있다"고 가정하고 cursorUp으로
@@ -1145,13 +930,6 @@ export function App(): React.JSX.Element {
       </Text>
     );
   }
-  if (error) {
-    footer.push(
-      <Text key="error" color="red" wrap="truncate-end">
-        {clip(`error: ${oneLine(error)}`, width) + tail}
-      </Text>
-    );
-  }
   if (showUsage) {
     for (const [i, line] of formatUsageLines(usage, Date.now(), width).entries()) {
       footer.push(
@@ -1200,7 +978,7 @@ export function App(): React.JSX.Element {
   lineRowsRef.current = visible.map((l) => l.row);
   frameLinesRef.current = visible.length + filler + shownFooter.length + 1;
 
-  const segments = fitSegments(statusSegments({ mode, above, below, ab, showHelp }), width);
+  const segments = fitSegments(statusSegments({ mode, above, below, ab, showHelp, collector: collectorStatus }), width);
 
   return (
     <Box flexDirection="column" width="100%">

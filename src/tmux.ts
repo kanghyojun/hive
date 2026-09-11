@@ -35,7 +35,7 @@ export function tmux(args: string[]): string {
   try {
     // execFileSync는 기본적으로 자식 stderr를 부모 stderr로 그대로 흘려보낸다(문서 확인). "옵션 없음" 같은
     // 예상 가능한 실패까지 새어나가지 않도록 stdio를 명시해 캡처한다.
-    return execFileSync("tmux", fullArgs, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] });
+    return execFileSync("tmux", fullArgs, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 5000 });
   } catch (err) {
     const e = err as { stderr?: Buffer | string; message?: string };
     const stderr = e.stderr ? e.stderr.toString() : (e.message ?? String(err));
@@ -72,9 +72,14 @@ export interface ServerInfo {
 }
 
 export function serverInfo(): ServerInfo {
-  const out = tmux(["display-message", "-p", "#{pid} #{start_time} #{socket_path}"]).trim();
-  const [pid, startTime, sock] = out.split(" ");
+  const out = tmux(["display-message", "-p", "#{pid}\t#{start_time}\t#{socket_path}"]).trim();
+  const [pid, startTime, sock] = out.split("\t");
+  if (!pid || !startTime || !sock) throw new Error("tmux 서버 정보를 읽을 수 없습니다");
   return { pid, startTime, socketPath: sock };
+}
+
+export function serverKey(server: ServerInfo): string {
+  return JSON.stringify([server.socketPath, server.pid, server.startTime]);
 }
 
 export interface PaneInfo {
@@ -131,12 +136,15 @@ const PANE_FIELDS = [
 ].join("\t");
 
 export function listPanes(): PaneInfo[] {
-  let out: string;
   try {
-    out = tmux(["list-panes", "-a", "-F", PANE_FIELDS]);
+    return listPanesStrict();
   } catch {
     return [];
   }
+}
+
+export function listPanesStrict(): PaneInfo[] {
+  const out = tmux(["list-panes", "-a", "-F", PANE_FIELDS]);
   return out
     .split("\n")
     .filter((line) => line.length > 0)
@@ -204,6 +212,7 @@ export function listProcesses(): ProcInfo[] {
     out = execFileSync("ps", ["-eo", "pid=,ppid=,comm="], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "ignore"],
+      timeout: 5000,
     });
   } catch {
     return [];

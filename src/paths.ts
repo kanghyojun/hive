@@ -1,6 +1,9 @@
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
-import { mkdirSync } from "node:fs";
+import { chmodSync, lstatSync, mkdirSync, realpathSync } from "node:fs";
+import { createHash } from "node:crypto";
+import type { ServerInfo } from "./tmux.js";
+import { serverKey } from "./tmux.js";
 
 // dist/cli.js와 src/cli.tsx 둘 다에서 동작해야 하므로 패키지 루트는 이 파일 기준 상위 디렉토리로 구한다.
 const moduleDir = dirname(fileURLToPath(import.meta.url));
@@ -40,8 +43,7 @@ export function cronPath(): string {
   return join(hiveHome(), "cron.json");
 }
 
-// cron은 TUI tick 안에서 도는데 거기서 던지면 사이드바가 통째로 에러 화면이 된다.
-// 그래서 실패를 삼키고 이 파일에만 남긴다.
+// cron 실패는 화면 수집을 막지 않고 별도 로그에 남긴다.
 export function cronLogPath(): string {
   return join(logsDir(), "cron.log");
 }
@@ -73,4 +75,32 @@ export function selfCommand(): [string, string] {
 export function ensureDirs(): void {
   mkdirSync(spoolDir(), { recursive: true });
   mkdirSync(logsDir(), { recursive: true });
+}
+
+export function canonicalHiveHome(home = hiveHome()): string {
+  mkdirSync(home, { recursive: true });
+  return realpathSync(home);
+}
+
+export function collectorEntryPath(): string {
+  return fileURLToPath(import.meta.url).replace(/paths\.(ts|js)$/, "collectorEntry.$1");
+}
+
+export function collectorLogPath(): string {
+  return join(logsDir(), "collector.log");
+}
+
+export function collectorSocketPath(home: string, server: ServerInfo): string {
+  const uid = process.getuid?.();
+  if (uid === undefined) throw new Error("수집기는 Unix 환경에서 실행해야 합니다");
+  // macOS의 Unix 소켓 경로 한계(104바이트)를 넘지 않도록 HIVE_HOME은 해시에만 넣는다.
+  const runtimeDir = `/tmp/hive-${uid}`;
+  mkdirSync(runtimeDir, { recursive: true, mode: 0o700 });
+  const stat = lstatSync(runtimeDir);
+  if (!stat.isDirectory() || stat.isSymbolicLink() || stat.uid !== uid) {
+    throw new Error(`안전하지 않은 수집기 경로입니다: ${runtimeDir}`);
+  }
+  chmodSync(runtimeDir, 0o700);
+  const hash = createHash("sha256").update(JSON.stringify([canonicalHiveHome(home), serverKey(server)])).digest("hex").slice(0, 32);
+  return join(runtimeDir, `${hash}.sock`);
 }

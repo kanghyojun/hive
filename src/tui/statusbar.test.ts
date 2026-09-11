@@ -59,3 +59,16 @@ describe("fitSegments", () => {
     expect(segmentsWidth(two)).toBe(two[0].text.length + 1 + two[1].text.length);
   });
 });
+
+
+describe("수집기 갱신 상태", () => {
+  it("정상 연결은 표시를 추가하지 않습니다", () => {
+    expect(keys({ ...base, collector: { connected: true, stale: false, error: null } })).toEqual(keys(base));
+  });
+  it("연결 대기와 오래된 snapshot을 좁은 화면에서도 표시합니다", () => {
+    const pending = statusSegments({ ...base, collector: { connected: false, stale: true, error: null } });
+    expect(fitSegments(pending, 15)[0].text).toBe(" 갱신 대기 ");
+    const stale = statusSegments({ ...base, collector: { connected: true, stale: true, error: "일시 실패" } });
+    expect(fitSegments(stale, 15)[0].text).toBe(" 갱신 중단 ");
+  });
+});

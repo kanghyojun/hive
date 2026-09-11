@@ -1,5 +1,6 @@
 import {
   currentPaneId,
+  serverInfo,
   getSessionOption,
   listPanes,
   paneExists,
@@ -15,7 +16,9 @@ import {
   unsetSessionOption,
   type PaneInfo,
 } from "./tmux.js";
-import { selfCommand } from "./paths.js";
+import { canonicalHiveHome, selfCommand } from "./paths.js";
+
+import { shQuote } from "./sh.js";
 
 export const SIDEBAR_WIDTH = 41;
 const SIDEBAR_HOOK_INDEX = "session-window-changed[77]";
@@ -96,7 +99,8 @@ export function attachSidebar(sessionName: string, windowId: string): void {
   }
 
   const [node, cli] = selfCommand();
-  const command = `${node} ${cli} tui`;
+  const command = [node, ...process.execArgv, cli, "--home", canonicalHiveHome(),
+    "--tmux-socket", serverInfo().socketPath, "tui"].map(shQuote).join(" ");
   const sidebarPaneId = splitLeft({ target: windowId, width: SIDEBAR_WIDTH, command });
 
   setPaneOption(sidebarPaneId, SIDEBAR_MARK_OPTION, "1");

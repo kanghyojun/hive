@@ -1,5 +1,6 @@
 import stringWidth from "string-width";
 import type { ViewMode } from "../model.js";
+import type { CollectorStatus } from "../collectorClient.js";
 import type { AbStatus } from "../abBridge.js";
 
 // 세그먼트 사이를 가르는 선. 목록 왼쪽의 RAIL과 같은 글자를 써서 화면이 한 벌로 보이게 한다.
@@ -26,6 +27,7 @@ export function statusSegments(input: {
   below: number;
   ab: AbStatus | null;
   showHelp: boolean;
+  collector?: CollectorStatus;
 }): StatusSegment[] {
   const segments: StatusSegment[] = [
     {
@@ -37,10 +39,14 @@ export function statusSegments(input: {
     },
   ];
 
+  if (input.collector && (!input.collector.connected || input.collector.stale)) {
+    segments.unshift({ key: "collector", text: input.collector.connected ? " 갱신 중단 " : " 갱신 대기 ", color: "yellow" });
+  }
+
   const scroll = scrollText(input.above, input.below);
   if (scroll) segments.push({ key: "scroll", text: ` ${scroll} `, dim: true });
 
-  // ab-local이 없는 머신에서는 아예 안 띄운다(App.tsx probe 주석).
+  // ab-local이 없는 머신에서는 아예 안 띄운다.
   if (input.ab !== null) {
     segments.push({
       key: "ab",
