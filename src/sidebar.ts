@@ -43,10 +43,10 @@ function joinHereCommand(): string {
   return `run-shell -b "tmux -S '#{socket_path}' join-pane -d -hb -l ${SIDEBAR_WIDTH} -s '#{${SIDEBAR_PANE_OPTION}}' -t '#{window_id}' >/dev/null 2>&1"`;
 }
 
-// 사이드바는 서버에 하나다. 창이 바뀐 세션 안에 사이드바가 있을 때만 따라간다. 아무도 안 보는 세션에서
-// 창이 닫혀 현재 창이 바뀌어도 사이드바를 그리로 끌고 가지 않으려는 것이다.
+// 클라이언트가 붙어 있는 세션이면 사이드바가 다른 세션에 있어도 따라간다.
+// 아무도 안 보는 세션에서 창이 바뀌면, 그 세션에 사이드바가 있을 때만 옮긴다.
 export function windowHookCommand(): string {
-  return `if-shell -F '#{W:#{P:#{${SIDEBAR_MARK_OPTION}}}}' { ${joinHereCommand()} }`;
+  return `if-shell -F '#{||:#{session_attached},#{W:#{P:#{${SIDEBAR_MARK_OPTION}}}}}' { ${joinHereCommand()} }`;
 }
 
 // 클라이언트가 보는 창에 사이드바가 이미 있으면 건드리지 않는다. 포커스가 들어올 때마다 레이아웃이 흔들리지 않게.
@@ -55,6 +55,7 @@ export function clientHookCommand(): string {
 }
 
 function installFollowHooks(): void {
+  setServerOption("focus-events", "on");
   setGlobalHook(WINDOW_HOOK, windowHookCommand());
   for (const hook of CLIENT_HOOKS) setGlobalHook(hook, clientHookCommand());
 }

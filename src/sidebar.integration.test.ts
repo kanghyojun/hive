@@ -60,7 +60,6 @@ beforeEach(() => {
   dir = mkdtempSync("/tmp/hive-sidebar-test-");
   socket = join(dir, "tmux.sock");
   tmux("-f", "/dev/null", "new-session", "-d", "-s", "a", "-x", "200", "-y", "50", "sleep 120");
-  tmux("set-option", "-g", "focus-events", "on");
   tmux("new-window", "-d", "-t", "a:", "sleep 120");
   tmux("new-session", "-d", "-s", "b", "-x", "200", "-y", "50", "sleep 120");
   tmux("new-window", "-d", "-t", "b:", "sleep 120");
@@ -75,7 +74,8 @@ afterEach(() => {
   rmSync(dir, { recursive: true, force: true });
 });
 
-it.skipIf(!hasTools)("세션마다 떠 있던 사이드바를 하나로 거두고 지금 창으로 데려온다", () => {
+it.skipIf(!hasTools)("세션마다 떠 있던 사이드바를 하나로 거두고 이후 창 이동도 따라간다", async () => {
+  tmux("select-window", "-t", "b:1");
   fakeSidebar("a:0");
   const inB = fakeSidebar("b:0");
   tmux("set-hook", "-t", "b", "session-window-changed[77]", "set-option -s @legacy fired");
@@ -89,9 +89,35 @@ it.skipIf(!hasTools)("세션마다 떠 있던 사이드바를 하나로 거두�
   expect(tmux("show-options", "-sv", SIDEBAR_PANE_OPTION)).toBe(left[0]);
   expect(tmux("show-hooks", "-t", "b")).not.toContain("@legacy");
   expect(tmux("show-options", "-t", "b")).not.toContain(SIDEBAR_PANE_OPTION);
+
+  tmux("select-window", "-t", "b:0");
+  await until(() => where(left[0]), (w) => w === "b:0");
+}, 10_000);
+
+it.skipIf(!hasTools)("이전 정리에서 빈 hook 배열만 남은 세션도 전역 창 이동 hook을 상속한다", async () => {
+  const sidebar = fakeSidebar("a:0");
+  tmux("set-hook", "-t", "a", "session-window-changed[77]", "set-option -s @legacy fired");
+  tmux("set-hook", "-u", "-t", "a", "session-window-changed[77]");
+  expect(tmux("show-hooks", "-t", "a")).toContain("session-window-changed");
+
+  attachSidebar(windowOf("a:0"));
+
+  tmux("select-window", "-t", "a:1");
+  await until(() => where(sidebar), (w) => w === "a:1");
+}, 10_000);
+
+it.skipIf(!hasTools)("예전 사이드바 hook을 정리할 때 다른 인덱스의 사용자 hook은 보존한다", () => {
+  fakeSidebar("a:0");
+  tmux("set-hook", "-t", "a", "session-window-changed[1]", "set-option -s @user_hook fired");
+  tmux("set-hook", "-t", "a", "session-window-changed[77]", "set-option -s @legacy fired");
+
+  attachSidebar(windowOf("a:0"));
+
+  expect(tmux("show-hooks", "-t", "a")).toContain("@user_hook");
+  expect(tmux("show-hooks", "-t", "a")).not.toContain("@legacy");
 });
 
-it.skipIf(!hasTools)("사이드바가 있는 세션의 창만 따라가고, 사람이 옮겨 가거나 포커스를 준 곳으로 간다", async () => {
+it.skipIf(!hasTools)("백그라운드 세션에는 끌려가지 않고, 사람이 옮겨 가거나 포커스를 준 곳으로 간다", async () => {
   const sidebar = fakeSidebar("a:0");
   attachSidebar(windowOf("a:0"));
 
@@ -113,6 +139,31 @@ it.skipIf(!hasTools)("사이드바가 있는 세션의 창만 따라가고, 사�
 
   first.stdin!.write("\x1b[I");
   await until(() => where(sidebar), (w) => w === "b:1");
+  expect(markedPanes()).toEqual([sidebar]);
+}, 20_000);
+
+it.skipIf(!hasTools)("show가 터미널 포커스 추적을 켠다", () => {
+  expect(tmux("show-options", "-sv", "focus-events")).toBe("off");
+  fakeSidebar("a:0");
+  attachSidebar(windowOf("a:0"));
+  expect(tmux("show-options", "-sv", "focus-events")).toBe("on");
+});
+
+it.skipIf(!hasTools)("이미 붙어 있는 다른 세션의 창 이동과 새 창도 따라간다", async () => {
+  const sidebar = fakeSidebar("a:0");
+  attachSidebar(windowOf("a:0"));
+
+  attachClient("a");
+  await until(() => tmux("list-clients", "-F", "#{session_name}"), (out) => out === "a");
+  attachClient("b");
+  await until(() => where(sidebar), (w) => w === "b:0");
+
+  // 포커스 이벤트가 오지 않아도, 이미 다른 클라이언트가 붙은 세션의 창 이동을 따라야 한다.
+  tmux("select-window", "-t", "a:1");
+  await until(() => where(sidebar), (w) => w === "a:1");
+
+  const newWindow = tmux("new-window", "-P", "-F", "#{window_id}", "-t", "b:", "sleep 120");
+  await until(() => windowOf(sidebar), (w) => w === newWindow);
   expect(markedPanes()).toEqual([sidebar]);
 }, 20_000);
 

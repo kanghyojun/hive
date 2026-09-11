@@ -394,6 +394,12 @@ export function unsetGlobalHook(hookName: string): void {
 export function unsetSessionHook(session: string, hookName: string): void {
   try {
     tmux(["set-hook", "-u", "-t", session, hookName]);
+    // 마지막 인덱스만 지우면 빈 세션 배열이 남아 전역 hook을 가린다.
+    // 다른 사용자 hook이 남아 있으면 그 배열은 보존한다.
+    const arrayName = hookName.replace(/\[\d+\]$/, "");
+    if (arrayName !== hookName && tmux(["show-hooks", "-t", session]).split("\n").includes(arrayName)) {
+      tmux(["set-hook", "-u", "-t", session, arrayName]);
+    }
   } catch {
     // 이미 없으면 무시.
   }
