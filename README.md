@@ -63,7 +63,7 @@ hive hook status --agent codex   # installed 옆 trusted/untrusted 열이 승인
 
 ```
 bind V run-shell -b "<node> <cli.js> --pane '#{pane_id}' sidebar toggle"
-bind W command-prompt -p "branch:" "run-shell -b \"<node> <cli.js> --pane '#{pane_id}' wt new %% --repo '#{pane_current_path}'\""
+bind W run-shell -b "<node> <cli.js> --pane '#{pane_id}' sidebar select"
 ```
 
 `--pane '#{pane_id}'`를 빼면 안 됩니다. tmux가 `run-shell`로 실행하는 명령에는 `TMUX_PANE`이
@@ -71,7 +71,9 @@ bind W command-prompt -p "branch:" "run-shell -b \"<node> <cli.js> --pane '#{pan
 `#{...}` 포맷을 확장하므로 이렇게 pane id를 직접 넘깁니다. 옵션이 없으면 활성 pane을 조회하는
 폴백이 돌지만, 클라이언트가 여러 개 붙어 있으면 엉뚱한 pane을 집을 수 있습니다.
 
-사이드바로 포커스를 옮기는 별도 바인딩은 없습니다. 기존 `prefix+h`(`select-pane -L`)를 그대로 씁니다.
+`prefix+W`는 어느 pane에서든 사이드바로 포커스를 옮깁니다. 닫혀 있으면 먼저 열고,
+다른 창에 있으면 현재 창으로 가져와 선택합니다. 이미 사이드바를 선택한 상태에서는 그대로 유지합니다.
+기존 `prefix+h`(`select-pane -L`)는 왼쪽 pane으로 이동할 때 그대로 씁니다.
 
 바인딩이 조용히 실패하면 tmux는 `'...' returned 1`만 보여줍니다. 원인은
 `~/.hive/logs/cli-error.log`에 스택으로 남습니다.
