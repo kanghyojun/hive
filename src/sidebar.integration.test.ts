@@ -1,5 +1,5 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { once } from "node:events";
 import { afterEach, beforeEach, expect, it } from "vitest";
@@ -180,6 +180,33 @@ it.skipIf(!hasTools)("show가 터미널 포커스 추적을 켠다", () => {
   expect(tmux("show-options", "-sv", "focus-events")).toBe("on");
 });
 
+it.skipIf(!hasTools)("flock 명령이 없어도 직접 이동과 detach 후 다른 세션 attach가 동작한다", async () => {
+  const bin = join(dir, "bin");
+  mkdirSync(bin);
+  for (const tool of ["sh", "tmux", "head", "perl"]) {
+    const executable = execFileSync("sh", ["-c", 'command -v "$1"', "sh", tool], { encoding: "utf8" }).trim();
+    symlinkSync(executable, join(bin, tool));
+  }
+  const sidebar = fakeSidebar("a:0");
+  attachSidebar(windowOf("a:0"));
+  execFileSync("sh", [sidebarFollowScriptPath(), socket, sidebar, windowOf("b:0"), "41"], {
+    env: { ...process.env, PATH: bin }, timeout: 5000,
+  });
+  expect(where(sidebar)).toBe("b:0");
+  attachSidebar(windowOf("a:0"));
+
+  tmux("set-environment", "-g", "PATH", bin);
+  tmux("set-option", "-g", "default-shell", "/bin/sh");
+  const client = attachClient("a");
+  await until(() => tmux("list-clients", "-F", "#{session_name}"), (out) => out === "a");
+  const detached = once(client, "exit");
+  tmux("detach-client", "-s", "a");
+  await detached;
+  attachClient("b");
+  await until(() => where(sidebar), (w) => w === "b:0");
+  expect(markedPanes()).toEqual([sidebar]);
+}, 15_000);
+
 it.skipIf(!hasTools)("이미 붙어 있는 다른 세션의 창 이동과 새 창도 따라간다", async () => {
   const sidebar = fakeSidebar("a:0");
   attachSidebar(windowOf("a:0"));
@@ -292,4 +319,39 @@ it.skipIf(!hasTools)("잠금을 기다리던 이동이 중단돼도 이후 사�
 
   attachSidebar(windowOf("b:0"));
   expect(where(sidebar)).toBe("b:0");
+}, 10_000);
+
+it.skipIf(!hasTools).each(["sidebar", "target"])("잠금 대기 중 %s가 사라진 훅은 오류나 다른 창 이동 없이 끝난다", async (removed) => {
+  const sidebar = fakeSidebar("a:0");
+  const target = windowOf("b:0");
+  const holder = spawn("flock", [`${socket}.hive-sidebar.lock`, "sh", "-c", "printf ready; read release"], {
+    stdio: ["pipe", "pipe", "ignore"],
+  });
+  clients.push(holder);
+  await once(holder.stdout!, "data");
+  const pending = spawn("sh", [sidebarFollowScriptPath(), socket, sidebar, target, "41"], {
+    stdio: ["ignore", "ignore", "pipe"],
+  });
+  clients.push(pending);
+  let stderr = "";
+  pending.stderr!.on("data", (chunk) => { stderr += chunk; });
+  const finished = once(pending, "exit");
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  let remainingSidebar = sidebar;
+  if (removed === "sidebar") {
+    tmux("kill-pane", "-t", sidebar);
+    remainingSidebar = fakeSidebar("a:0");
+    tmux("set-option", "-s", SIDEBAR_PANE_OPTION, remainingSidebar);
+  } else {
+    tmux("kill-window", "-t", target);
+  }
+  const before = geometry("a:0");
+  const released = once(holder, "exit");
+  holder.stdin!.end("release\n");
+  await released;
+
+  expect(await finished).toEqual([0, null]);
+  expect(stderr).toBe("");
+  expect(where(remainingSidebar)).toBe("a:0");
+  expect(geometry("a:0")).toBe(before);
 }, 10_000);

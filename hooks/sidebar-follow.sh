@@ -11,13 +11,25 @@ layout() { tm display-message -p -t "$1" '#{window_layout}'; }
 first_pane() { tm list-panes -t "$1" -F '#{pane_id}' | head -n 1; }
 
 # 프로세스가 중단돼도 해제되는 파일 잠금을 쓴다. 포커스와 창 전환의 배치 저장이 섞이면 안 된다.
+# macOS에는 flock 명령이 없어 Perl로 상속받은 fd를 잠근다. 셸이 fd를 닫을 때까지 잠금이 유지된다.
 exec 9>"$socket.hive-sidebar.lock"
-flock -w 4 9
+perl -MFcntl=:flock -e '
+  open my $lock, ">&=9" or die "잠금 fd를 열 수 없습니다: $!\n";
+  $SIG{ALRM} = sub { exit 1 };
+  alarm 4;
+  flock($lock, LOCK_EX) or die "잠금을 얻을 수 없습니다: $!\n";
+  alarm 0;
+'
 
+# 비동기 훅이 잠금을 기다리는 동안 pane이나 창이 닫힐 수 있다.
+# display-message는 대상이 없어도 성공하므로 빈 결과를 확인한다. 빈 target은 현재 창으로 해석된다.
 source=$(tm display-message -p -t "$sidebar" '#{window_id}')
+[ -n "$source" ] || exit 0
 target=$(tm display-message -p -t "$target" '#{window_id}')
+[ -n "$target" ] || exit 0
 [ "$source" != "$target" ] || exit 0
 first=$(first_pane "$target")
+[ -n "$first" ] || exit 0
 before=$(layout "$target")
 saved=$(tm show-options -wqv -t "$target" @hive_sidebar_layout)
 without=$(tm show-options -wqv -t "$target" @hive_sidebar_without)
