@@ -24,7 +24,7 @@ sleep(`s` 키)은 표시 전용입니다. 이벤트 흡수와 상태 계산은 �
 
 두 보기 모드(`g` 키로 전환)가 있습니다. `recent`는 최근 입력순 단일 목록이고, `group`은 저장소(repoRoot) → worktree 순으로 묶은 목록입니다. 마지막으로 고른 모드는 `~/.hive/ui.json`에 저장됩니다.
 
-사이드바는 tmux 서버 전체에 하나만 뜨고, 사람이 보고 있는 곳으로 따라갑니다. 원리는 tmux 자체 기능입니다. `hive sidebar show`가 사이드바 pane 하나를 만들고 그 id를 서버 옵션에 저장한 뒤, 전역 hook을 걸어 둡니다. 사이드바가 있는 세션에서 활성 window가 바뀌면(`session-window-changed`), 다른 세션으로 옮겨 가면(`client-session-changed`), 다른 터미널 창에 포커스를 주거나 새로 붙으면(`client-focus-in`, `client-attached`) 이 hook이 `join-pane`으로 사이드바 pane을 그 window의 왼쪽으로 옮깁니다. 아무도 안 보는 세션에서 창이 닫혀 현재 창이 바뀌는 것에는 따라가지 않습니다. 옮기는 데는 몇 ms라 새로 띄울 때처럼 빈칸이 생기지 않고, TUI 프로세스는 하나라 상태도 잃지 않습니다. 세션이 여럿이어도 사이드바 메모리는 하나 몫입니다. 포커스를 따라가려면 tmux의 `focus-events`가 켜져 있어야 합니다.
+사이드바는 tmux 서버 전체에 하나만 뜨고, 사람이 보고 있는 곳으로 따라갑니다. 원리는 tmux 자체 기능입니다. `hive sidebar show`가 사이드바 pane 하나를 만들고 그 id를 서버 옵션에 저장한 뒤, 전역 hook을 걸어 둡니다. 클라이언트가 붙어 있거나 사이드바가 있는 세션에서 활성 window가 바뀌면(`session-window-changed`), 다른 세션으로 옮겨 가면(`client-session-changed`), 다른 터미널 창에 포커스를 주거나 새로 붙으면(`client-focus-in`, `client-attached`) 이 hook이 `join-pane`으로 사이드바 pane을 그 window의 왼쪽으로 옮깁니다. 이미 다른 터미널에 열려 있는 세션에서도 창을 바꾸거나 새 창을 만들면 사이드바가 따라옵니다. 아무도 안 보는 다른 세션에서 창이 닫혀 현재 창이 바뀌는 것에는 따라가지 않습니다. 옮기는 데는 몇 ms라 새로 띄울 때처럼 빈칸이 생기지 않고, TUI 프로세스는 하나라 상태도 잃지 않습니다. 세션이 여럿이어도 사이드바 메모리는 하나 몫입니다. 포커스 추적에 필요한 tmux의 `focus-events`는 사이드바를 켤 때 자동으로 켭니다.
 
 ## 설치
 
