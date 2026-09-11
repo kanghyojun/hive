@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { sidebarFollowScriptPath } from "./paths.js";
 
 export class TmuxError extends Error {
   constructor(
@@ -333,9 +334,10 @@ export function splitLeft(
   // 환경변수는 command 문자열에 끼워 넣지 않고 -e로 넘긴다. 명령은 셸이 해석하지만
   // -e는 tmux가 pane 환경에 직접 넣어 줘서 인용을 신경 쓸 필요가 없다.
   const envArgs = Object.entries(opts.env ?? {}).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
+  const firstPane = tmux(["list-panes", "-t", opts.target, "-F", "#{pane_id}"]).trim().split("\n")[0];
   return tmux([
     "split-window",
-    "-hb",
+    "-fhb",
     "-l",
     String(opts.width),
     "-d",
@@ -344,14 +346,16 @@ export function splitLeft(
     "#{pane_id}",
     ...envArgs,
     "-t",
-    opts.target,
+    firstPane,
     opts.command,
   ]).trim();
 }
 
-// 사이드바를 지금 보는 창으로 데려올 때 쓴다. hook 안에서는 이 함수를 못 쓰고 tmux 명령 문자열을 짜야 한다.
+// 직접 표시할 때와 창 전환 hook이 같은 배치 저장·복원 절차를 쓴다.
 export function joinPaneLeft(opts: { source: string; target: string; width: number }): void {
-  tmux(["join-pane", "-d", "-hb", "-l", String(opts.width), "-s", opts.source, "-t", opts.target]);
+  execFileSync("sh", [sidebarFollowScriptPath(), serverInfo().socketPath, opts.source, opts.target, String(opts.width)], {
+    stdio: ["ignore", "pipe", "pipe"], timeout: 5000,
+  });
 }
 
 export function setPaneOption(paneId: string, name: string, value: string): void {

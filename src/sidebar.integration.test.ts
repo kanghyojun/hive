@@ -1,9 +1,11 @@
 import { execFileSync, spawn, type ChildProcess } from "node:child_process";
 import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
+import { once } from "node:events";
 import { afterEach, beforeEach, expect, it } from "vitest";
 import { attachSidebar, hideSidebar } from "./sidebar.js";
-import { setTmuxSocketOverride, SIDEBAR_MARK_OPTION, SIDEBAR_PANE_OPTION } from "./tmux.js";
+import { setTmuxSocketOverride, SIDEBAR_MARK_OPTION, SIDEBAR_PANE_OPTION, splitLeft } from "./tmux.js";
+import { sidebarFollowScriptPath } from "./paths.js";
 
 // 클라이언트를 붙여야 세션 전환과 포커스 hook을 재현할 수 있어서 script로 pty를 만든다.
 let hasTools = true;
@@ -174,6 +176,91 @@ it.skipIf(!hasTools)("hide는 서버 전체의 사이드바와 따라다니는 h
   hideSidebar();
 
   expect(markedPanes()).toEqual([]);
-  expect(tmux("show-hooks", "-g")).not.toContain("join-pane");
+  expect(tmux("show-hooks", "-g")).not.toContain("sidebar-follow.sh");
   expect(tmux("show-options", "-s")).not.toContain(SIDEBAR_PANE_OPTION);
 });
+
+const geometry = (target: string) => tmux("list-panes", "-t", target, "-F",
+  "#{pane_id}:#{pane_left}:#{pane_top}:#{pane_width}:#{pane_height}");
+
+it.skipIf(!hasTools).each(["off", "top", "bottom"])("테두리 상태줄 %s에서 오른쪽 pane을 선택하고 왕복해도 배치를 보존한다", async (border) => {
+  tmux("set-option", "-w", "-t", "a:0", "pane-border-status", border);
+  const sidebar = fakeSidebar("a:0");
+  const right = tmux("split-window", "-h", "-P", "-F", "#{pane_id}", "-t", "a:0", "sleep 120");
+  attachSidebar(windowOf("a:0"));
+  const before = geometry("a:0");
+
+  for (let i = 0; i < 5; i++) {
+    tmux("select-pane", "-t", right);
+    tmux("select-window", "-t", "a:1");
+    await until(() => where(sidebar), (w) => w === "a:1");
+    tmux("select-window", "-t", "a:0");
+    await until(() => geometry("a:0"), (value) => value === before);
+  }
+}, 15_000);
+
+it.skipIf(!hasTools)("사이드바를 켠 채 중첩 분할과 크기를 바꿔도 직접 show 왕복으로 배치를 보존한다", () => {
+  const sidebar = fakeSidebar("a:0");
+  const right = tmux("split-window", "-h", "-P", "-F", "#{pane_id}", "-t", "a:0", "sleep 120");
+  tmux("split-window", "-v", "-t", right, "sleep 120");
+  tmux("resize-pane", "-t", right, "-x", "60");
+  attachSidebar(windowOf("a:0"));
+  const before = geometry("a:0");
+
+  for (let i = 0; i < 3; i++) {
+    attachSidebar(windowOf("b:0"));
+    attachSidebar(windowOf("a:0"));
+    expect(geometry("a:0")).toBe(before);
+  }
+  expect(markedPanes()).toEqual([sidebar]);
+});
+
+it.skipIf(!hasTools)("사이드바 없는 동안 바꾼 분할은 이전 배치로 덮어쓰지 않는다", () => {
+  fakeSidebar("a:0");
+  attachSidebar(windowOf("a:0"));
+  attachSidebar(windowOf("b:0"));
+  const added = tmux("split-window", "-v", "-P", "-F", "#{pane_id}", "-t", "a:0", "sleep 120");
+  const top = tmux("display-message", "-p", "-t", added, "#{pane_top}");
+
+  attachSidebar(windowOf("a:0"));
+
+  expect(tmux("display-message", "-p", "-t", added, "#{pane_top}")).toBe(top);
+  expect(tmux("list-panes", "-t", "a:0", "-F", "#{pane_id}").split("\n")).toHaveLength(3);
+  const before = geometry("a:0");
+  attachSidebar(windowOf("b:0"));
+  attachSidebar(windowOf("a:0"));
+  expect(geometry("a:0")).toBe(before);
+});
+
+it.skipIf(!hasTools)("최초 사이드바도 활성 pane과 관계없이 창 전체의 맨 왼쪽에 만든다", () => {
+  tmux("split-window", "-v", "-t", "a:0", "sleep 120");
+  const sidebar = splitLeft({ target: windowOf("a:0"), width: 41, command: "sleep 120" });
+
+  expect(tmux("list-panes", "-t", "a:0", "-F", "#{pane_id}").split("\n")[0]).toBe(sidebar);
+  expect(tmux("display-message", "-p", "-t", sidebar,
+    "#{pane_left}:#{pane_top}:#{pane_width}:#{pane_height}")).toBe("0:0:41:50");
+});
+
+it.skipIf(!hasTools)("잠금을 기다리던 이동이 중단돼도 이후 사이드바 이동이 막히지 않는다", async () => {
+  const sidebar = fakeSidebar("a:0");
+  attachSidebar(windowOf("a:0"));
+  const holder = spawn("flock", [`${socket}.hive-sidebar.lock`, "sh", "-c", "printf ready; read release"], {
+    stdio: ["pipe", "pipe", "ignore"],
+  });
+  clients.push(holder);
+  await once(holder.stdout!, "data");
+  const waiter = spawn("sh", [sidebarFollowScriptPath(), socket, sidebar, windowOf("b:0"), "41"], {
+    stdio: "ignore",
+  });
+  clients.push(waiter);
+  await new Promise((resolve) => setTimeout(resolve, 100));
+  const stopped = once(waiter, "exit");
+  waiter.kill();
+  await stopped;
+  const released = once(holder, "exit");
+  holder.stdin!.end("release\n");
+  await released;
+
+  attachSidebar(windowOf("b:0"));
+  expect(where(sidebar)).toBe("b:0");
+}, 10_000);

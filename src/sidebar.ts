@@ -16,7 +16,7 @@ import {
   unsetSessionOption,
   type PaneInfo,
 } from "./tmux.js";
-import { canonicalHiveHome, selfRelaunchArgv } from "./paths.js";
+import { canonicalHiveHome, selfRelaunchArgv, sidebarFollowScriptPath } from "./paths.js";
 
 import { shQuote } from "./sh.js";
 
@@ -40,7 +40,8 @@ function requireCurrentPane() {
 // hook 안에서 join-pane을 직접 쓰면 동작하지 않아(실측) run-shell로 tmux 클라이언트를 다시 부른다.
 // #{socket_path}, #{@hive_sidebar_pane}, #{window_id}는 $/%가 섞여 있어 반드시 작은따옴표로 감싼다.
 function joinHereCommand(): string {
-  return `run-shell -b "tmux -S '#{socket_path}' join-pane -d -hb -l ${SIDEBAR_WIDTH} -s '#{${SIDEBAR_PANE_OPTION}}' -t '#{window_id}' >/dev/null 2>&1"`;
+  const command = `sh ${shQuote(sidebarFollowScriptPath())} '#{socket_path}' '#{${SIDEBAR_PANE_OPTION}}' '#{window_id}' ${SIDEBAR_WIDTH}`;
+  return `run-shell -b ${shQuote(command)}`;
 }
 
 // 클라이언트가 붙어 있는 세션이면 사이드바가 다른 세션에 있어도 따라간다.

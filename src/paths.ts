@@ -61,6 +61,10 @@ export function codexHookScriptPath(): string {
   return join(packageRoot, "hooks", "codex-hook.sh");
 }
 
+export function sidebarFollowScriptPath(): string {
+  return join(packageRoot, "hooks", "sidebar-follow.sh");
+}
+
 export function cliEntryPath(): string {
   // 개발 중(tsx)에는 src/cli.tsx, 빌드 후에는 dist/cli.js 자기 자신.
   return fileURLToPath(import.meta.url).replace(/paths\.(ts|js)$/, (_m, ext) =>
