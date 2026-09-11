@@ -32,7 +32,7 @@ import {
   serverInfo,
   switchClient,
 } from "./tmux.js";
-import { hideSidebar, showSidebar, toggleSidebar, cleanupFromTui } from "./sidebar.js";
+import { hideSidebar, showSidebar, selectSidebar, toggleSidebar, cleanupFromTui } from "./sidebar.js";
 import { AGENT_KINDS, installHooks, statusHooks, uninstallHooks, type AgentKind } from "./hookInstall.js";
 import {
   createInitScript,
@@ -109,6 +109,10 @@ program
   });
 
 const sidebar = program.command("sidebar").description("사이드바 pane 제어");
+sidebar
+  .command("select")
+  .description("사이드바를 열고 포커스 이동")
+  .action(() => selectSidebar());
 sidebar
   .command("show")
   .action(() => showSidebar());

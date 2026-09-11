@@ -3,8 +3,8 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { once } from "node:events";
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { attachSidebar, hideSidebar } from "./sidebar.js";
-import { setTmuxSocketOverride, SIDEBAR_MARK_OPTION, SIDEBAR_PANE_OPTION, splitLeft } from "./tmux.js";
+import { attachSidebar, hideSidebar, selectSidebar } from "./sidebar.js";
+import { setPaneOverride, setTmuxSocketOverride, SIDEBAR_MARK_OPTION, SIDEBAR_PANE_OPTION, splitLeft } from "./tmux.js";
 import { sidebarFollowScriptPath } from "./paths.js";
 
 // 클라이언트를 붙여야 세션 전환과 포커스 hook을 재현할 수 있어서 script로 pty를 만든다.
@@ -73,7 +73,36 @@ afterEach(() => {
   for (const client of clients.splice(0)) client.kill();
   try { tmux("kill-server"); } catch { /* 이미 내려갔으면 무시 */ }
   setTmuxSocketOverride(undefined);
+  setPaneOverride(undefined);
   rmSync(dir, { recursive: true, force: true });
+});
+
+it.skipIf(!hasTools)("select는 다른 세션의 사이드바를 가져와 선택하고 반복해도 닫지 않는다", () => {
+  const sidebar = fakeSidebar("a:0");
+  const origin = tmux("display-message", "-p", "-t", "b:0", "#{pane_id}");
+  setPaneOverride(origin);
+
+  selectSidebar();
+
+  expect(where(sidebar)).toBe("b:0");
+  expect(tmux("display-message", "-p", "-t", sidebar, "#{pane_active}")).toBe("1");
+  expect(markedPanes()).toEqual([sidebar]);
+
+  setPaneOverride(sidebar);
+  selectSidebar();
+  expect(markedPanes()).toEqual([sidebar]);
+  expect(tmux("display-message", "-p", "-t", sidebar, "#{pane_active}")).toBe("1");
+});
+
+it.skipIf(!hasTools)("select는 같은 창에서 다른 pane에 있어도 사이드바를 선택한다", () => {
+  const sidebar = fakeSidebar("a:0");
+  const origin = tmux("split-window", "-h", "-t", "a:0", "-P", "-F", "#{pane_id}", "sleep 120");
+  setPaneOverride(origin);
+
+  selectSidebar();
+
+  expect(markedPanes()).toEqual([sidebar]);
+  expect(tmux("display-message", "-p", "-t", sidebar, "#{pane_active}")).toBe("1");
 });
 
 it.skipIf(!hasTools)("세션마다 떠 있던 사이드바를 하나로 거두고 이후 창 이동도 따라간다", async () => {

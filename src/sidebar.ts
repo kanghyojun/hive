@@ -2,6 +2,7 @@ import {
   currentPaneId,
   serverInfo,
   listPanes,
+  selectPane,
   joinPaneLeft,
   setGlobalHook,
   setPaneOption,
@@ -103,7 +104,7 @@ function killPane(paneId: string): void {
 
 // 사이드바를 이 window로 데려온다. 서버 어디에든 떠 있으면 옮기고, 하나도 없을 때만 새로 띄운다.
 // 새로 띄우면 첫 화면까지 0.5초가 걸리지만 옮기는 건 몇 ms라 눈에 띄지 않는다(실측).
-export function attachSidebar(windowId: string): void {
+export function attachSidebar(windowId: string): string {
   const panes = listPanes();
   clearPerSessionState(panes);
   const existing = sidebarPanes(panes);
@@ -112,7 +113,7 @@ export function attachSidebar(windowId: string): void {
     const here = sidebarPanesInWindow(panes, windowId);
     const keep = adoptSidebar([...here, ...existing.filter((id) => !here.includes(id))]);
     if (here.length === 0) joinPaneLeft({ source: keep, target: windowId, width: SIDEBAR_WIDTH });
-    return;
+    return keep;
   }
 
   // React는 런타임에 NODE_ENV로 dev/prod 빌드를 고른다. tsc는 이 분기를 치환하지 않으므로
@@ -131,10 +132,15 @@ export function attachSidebar(windowId: string): void {
   setPaneOption(sidebarPaneId, SIDEBAR_MARK_OPTION, "1");
   setServerOption(SIDEBAR_PANE_OPTION, sidebarPaneId);
   installFollowHooks();
+  return sidebarPaneId;
 }
 
 export function showSidebar(): void {
   attachSidebar(requireCurrentPane().windowId);
+}
+
+export function selectSidebar(): void {
+  selectPane(attachSidebar(requireCurrentPane().windowId));
 }
 
 export function hideSidebar(): void {
