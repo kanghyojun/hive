@@ -99,18 +99,18 @@ export interface PaneInfo {
   /** claude가 OSC로 써 넣는 제목. 작업이 진행되면서 바뀐다. */
   paneTitle: string;
   panePid: string;
-  /** 이 pane이 속한 세션의 hive 사이드바 pane id. 사이드바가 없으면 빈 문자열. */
+  /** 서버에 하나뿐인 hive 사이드바의 pane id. 사이드바가 없으면 빈 문자열. */
   sidebarPaneId: string;
-  /** 이 pane 자신이 사이드바인지. 세션 옵션과 달리 pane을 따라다녀서 어긋나지 않는다. */
+  /** 이 pane 자신이 사이드바인지. 서버 옵션과 달리 pane을 따라다녀서 어긋나지 않는다. */
   sidebarMark: boolean;
   /** 이 pane의 세션에 붙어 있는 클라이언트가 있는지. windowActive와 같이 봐야 "사람이 보고 있는 창"이 된다. */
   sessionAttached: boolean;
 }
 
-// sidebar.ts가 이 이름으로 세션 옵션을 심는다. 포맷 문자열 안에서는 값이 없어도 에러 대신 빈 문자열이 나온다(실측).
+// sidebar.ts가 이 이름으로 서버 옵션을 심는다. 포맷 문자열 안에서는 값이 없어도 에러 대신 빈 문자열이 나온다(실측).
 export const SIDEBAR_PANE_OPTION = "@hive_sidebar_pane";
 
-// 세션 옵션은 사이드바가 죽는 순서나 join-pane에 따라 실제 pane과 어긋난다. pane 옵션은 pane과 함께
+// 서버 옵션은 사이드바가 죽는 순서나 join-pane에 따라 실제 pane과 어긋난다. pane 옵션은 pane과 함께
 // 사라지고 join-pane으로 window를 옮겨도 따라온다(실측). 그래서 "사이드바인가"는 이쪽으로 판단한다.
 export const SIDEBAR_MARK_OPTION = "@hive_sidebar";
 
@@ -354,22 +354,21 @@ export function joinPaneLeft(opts: { source: string; target: string; width: numb
   tmux(["join-pane", "-d", "-hb", "-l", String(opts.width), "-s", opts.source, "-t", opts.target]);
 }
 
-// 커스텀(@) 옵션이 한 번도 set되지 않았으면 tmux가 빈 문자열이 아니라 "invalid option" 에러를 낸다(실측).
-// #{@name} 포맷 문자열은 비어 있는 값을 그냥 돌려주지만 show-options -v는 그렇지 않다.
-export function getSessionOption(session: string, name: string): string {
-  try {
-    return tmux(["show-options", "-t", session, "-v", name]).trim();
-  } catch {
-    return "";
-  }
-}
-
-export function setSessionOption(session: string, name: string, value: string): void {
-  tmux(["set-option", "-t", session, name, value]);
-}
-
 export function setPaneOption(paneId: string, name: string, value: string): void {
   tmux(["set-option", "-p", "-t", paneId, name, value]);
+}
+
+// #{@name} 포맷은 어느 세션, 어느 pane에서 풀어도 서버 옵션 값을 돌려준다(실측).
+export function setServerOption(name: string, value: string): void {
+  tmux(["set-option", "-s", name, value]);
+}
+
+export function unsetServerOption(name: string): void {
+  try {
+    tmux(["set-option", "-su", name]);
+  } catch {
+    // 옵션이 이미 없으면 tmux가 에러를 내므로 무시한다.
+  }
 }
 
 export function unsetSessionOption(session: string, name: string): void {
@@ -380,8 +379,16 @@ export function unsetSessionOption(session: string, name: string): void {
   }
 }
 
-export function setSessionHook(session: string, hookName: string, command: string): void {
-  tmux(["set-hook", "-t", session, hookName, command]);
+export function setGlobalHook(hookName: string, command: string): void {
+  tmux(["set-hook", "-g", hookName, command]);
+}
+
+export function unsetGlobalHook(hookName: string): void {
+  try {
+    tmux(["set-hook", "-gu", hookName]);
+  } catch {
+    // 이미 없으면 무시.
+  }
 }
 
 export function unsetSessionHook(session: string, hookName: string): void {

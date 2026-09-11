@@ -145,8 +145,6 @@ export function openWorktreeSession(opts: OpenSessionOptions): WtNewResult {
     size: here ? windowSize(here) : undefined,
   });
 
-  attachSidebar(sessionName, windowId);
-
   // run-shell처럼 붙어 있는 클라이언트가 없는 자리에서 부르면 switch-client가 실패한다.
   // 세션은 이미 만들어졌으니 이동 실패는 결과로만 알리고 넘어간다.
   let switched = false;
@@ -158,6 +156,10 @@ export function openWorktreeSession(opts: OpenSessionOptions): WtNewResult {
       switched = false;
     }
   }
+
+  // 사이드바는 서버에 하나고 사람이 보는 곳에만 둔다. 그리로 옮겨 간 경우에만 데려오고, cron처럼
+  // 아무도 안 보는 세션을 열 때는 건드리지 않는다. 떠 있는 사이드바는 나중에 그 세션으로 가면 hook이 데려온다.
+  if (switched) attachSidebar(windowId);
 
   return { path: opts.path, sessionName, windowId, switched };
 }

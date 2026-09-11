@@ -1,17 +1,17 @@
 import {
   currentPaneId,
   serverInfo,
-  getSessionOption,
   listPanes,
-  paneExists,
   joinPaneLeft,
+  setGlobalHook,
   setPaneOption,
-  setSessionHook,
-  setSessionOption,
+  setServerOption,
   SIDEBAR_MARK_OPTION,
   SIDEBAR_PANE_OPTION,
   splitLeft,
   tmux,
+  unsetGlobalHook,
+  unsetServerOption,
   unsetSessionHook,
   unsetSessionOption,
   type PaneInfo,
@@ -21,7 +21,9 @@ import { canonicalHiveHome, selfRelaunchArgv } from "./paths.js";
 import { shQuote } from "./sh.js";
 
 export const SIDEBAR_WIDTH = 41;
-const SIDEBAR_HOOK_INDEX = "session-window-changed[77]";
+const WINDOW_HOOK = "session-window-changed[77]";
+// 사람이 다른 곳을 보기 시작하는 순간들이다. 세션을 옮기거나, 다른 터미널 창에 포커스를 주거나, 새로 붙는다.
+const CLIENT_HOOKS = ["client-session-changed[77]", "client-focus-in[77]", "client-attached[77]"];
 
 function requireCurrentPane() {
   const paneId = currentPaneId();
@@ -37,43 +39,55 @@ function requireCurrentPane() {
 
 // hook 안에서 join-pane을 직접 쓰면 동작하지 않아(실측) run-shell로 tmux 클라이언트를 다시 부른다.
 // #{socket_path}, #{@hive_sidebar_pane}, #{window_id}는 $/%가 섞여 있어 반드시 작은따옴표로 감싼다.
-function followHookCommand(): string {
+function joinHereCommand(): string {
   return `run-shell -b "tmux -S '#{socket_path}' join-pane -d -hb -l ${SIDEBAR_WIDTH} -s '#{${SIDEBAR_PANE_OPTION}}' -t '#{window_id}' >/dev/null 2>&1"`;
 }
 
-// 세션 옵션 하나만 믿으면, 옵션이 지워졌는데 사이드바 pane은 살아 있는 어긋난 상태에서
-// 사이드바를 또 만든다. 그렇게 남은 사이드바는 hook이 window를 옮길 때마다 한 창에 겹쳐 쌓인다.
-// pane에 남긴 표시는 pane과 운명을 같이하므로 이쪽을 실제 근거로 삼는다.
-export function sidebarPanesOf(panes: PaneInfo[], sessionName: string): string[] {
-  return panes.filter((p) => p.sessionName === sessionName && p.sidebarMark).map((p) => p.paneId);
+// 사이드바는 서버에 하나다. 창이 바뀐 세션 안에 사이드바가 있을 때만 따라간다. 아무도 안 보는 세션에서
+// 창이 닫혀 현재 창이 바뀌어도 사이드바를 그리로 끌고 가지 않으려는 것이다.
+export function windowHookCommand(): string {
+  return `if-shell -F '#{W:#{P:#{${SIDEBAR_MARK_OPTION}}}}' { ${joinHereCommand()} }`;
+}
+
+// 클라이언트가 보는 창에 사이드바가 이미 있으면 건드리지 않는다. 포커스가 들어올 때마다 레이아웃이 흔들리지 않게.
+export function clientHookCommand(): string {
+  return `if-shell -F '#{?#{P:#{${SIDEBAR_MARK_OPTION}}},0,1}' { ${joinHereCommand()} }`;
+}
+
+function installFollowHooks(): void {
+  setGlobalHook(WINDOW_HOOK, windowHookCommand());
+  for (const hook of CLIENT_HOOKS) setGlobalHook(hook, clientHookCommand());
+}
+
+function uninstallFollowHooks(): void {
+  unsetGlobalHook(WINDOW_HOOK);
+  for (const hook of CLIENT_HOOKS) unsetGlobalHook(hook);
+}
+
+// 세션마다 사이드바를 두던 시절의 hook과 옵션을 걷는다. 옛 hook이 남아 있으면 그 세션의 창이 바뀔 때마다,
+// 아무도 안 보고 있어도 사이드바를 그리로 끌고 간다.
+function clearPerSessionState(panes: PaneInfo[]): void {
+  for (const session of new Set(panes.map((p) => p.sessionName))) {
+    unsetSessionHook(session, WINDOW_HOOK);
+    unsetSessionOption(session, SIDEBAR_PANE_OPTION);
+  }
+}
+
+// pane에 남긴 표시를 근거로 삼는다. 서버 옵션은 사이드바가 죽는 순서에 따라 실제 pane과 어긋날 수 있다.
+export function sidebarPanes(panes: PaneInfo[]): string[] {
+  return panes.filter((p) => p.sidebarMark).map((p) => p.paneId);
 }
 
 export function sidebarPanesInWindow(panes: PaneInfo[], windowId: string): string[] {
   return panes.filter((p) => p.windowId === windowId && p.sidebarMark).map((p) => p.paneId);
 }
 
-function sidebarPanesInSession(sessionName: string): string[] {
-  return sidebarPanesOf(listPanes(), sessionName);
-}
-
-export function hasSidebar(sessionName: string): boolean {
-  return sidebarPanesInSession(sessionName).length > 0;
-}
-
-// 표시가 없던 시절에 뜬 사이드바와, 세션 옵션이 가리키는 pane까지 같이 거둔다.
-function sidebarPanesToKill(sessionName: string): string[] {
-  const ids = sidebarPanesInSession(sessionName);
-  const fromOption = getSessionOption(sessionName, SIDEBAR_PANE_OPTION);
-  if (fromOption && !ids.includes(fromOption) && paneExists(fromOption)) ids.push(fromOption);
-  return ids;
-}
-
-// 이미 있는 사이드바를 세션의 사이드바로 다시 등록한다. 여분이 쌓여 있으면 하나만 남긴다.
-function adoptSidebar(sessionName: string, paneIds: string[]): string {
+// 첫 번째 것을 서버의 사이드바로 등록하고 나머지는 거둔다.
+function adoptSidebar(paneIds: string[]): string {
   const [keep, ...extra] = paneIds;
   for (const paneId of extra) killPane(paneId);
-  setSessionOption(sessionName, SIDEBAR_PANE_OPTION, keep);
-  setSessionHook(sessionName, SIDEBAR_HOOK_INDEX, followHookCommand());
+  setServerOption(SIDEBAR_PANE_OPTION, keep);
+  installFollowHooks();
   return keep;
 }
 
@@ -85,16 +99,17 @@ function killPane(paneId: string): void {
   }
 }
 
-// wt new처럼 사이드바를 붙일 window가 CLI 자신의 pane과 다를 때 쓰는 저수준 진입점.
-export function attachSidebar(sessionName: string, windowId: string): void {
+// 사이드바를 이 window로 데려온다. 서버 어디에든 떠 있으면 옮기고, 하나도 없을 때만 새로 띄운다.
+// 새로 띄우면 첫 화면까지 0.5초가 걸리지만 옮기는 건 몇 ms라 눈에 띄지 않는다(실측).
+export function attachSidebar(windowId: string): void {
   const panes = listPanes();
-  const existing = sidebarPanesOf(panes, sessionName);
+  clearPerSessionState(panes);
+  const existing = sidebarPanes(panes);
   if (existing.length > 0) {
-    // 사이드바는 세션에 하나뿐이다. hook이 놓친 창에서 불렀으면 새로 만들지 말고 데려온다.
-    const keep = adoptSidebar(sessionName, existing);
-    if (!sidebarPanesInWindow(panes, windowId).includes(keep)) {
-      joinPaneLeft({ source: keep, target: windowId, width: SIDEBAR_WIDTH });
-    }
+    // 이미 이 창에 있는 것을 남겨야 옮길 일이 없다.
+    const here = sidebarPanesInWindow(panes, windowId);
+    const keep = adoptSidebar([...here, ...existing.filter((id) => !here.includes(id))]);
+    if (here.length === 0) joinPaneLeft({ source: keep, target: windowId, width: SIDEBAR_WIDTH });
     return;
   }
 
@@ -112,37 +127,35 @@ export function attachSidebar(sessionName: string, windowId: string): void {
   });
 
   setPaneOption(sidebarPaneId, SIDEBAR_MARK_OPTION, "1");
-  setSessionOption(sessionName, SIDEBAR_PANE_OPTION, sidebarPaneId);
-  setSessionHook(sessionName, SIDEBAR_HOOK_INDEX, followHookCommand());
+  setServerOption(SIDEBAR_PANE_OPTION, sidebarPaneId);
+  installFollowHooks();
 }
 
 export function showSidebar(): void {
-  const pane = requireCurrentPane();
-  attachSidebar(pane.sessionName, pane.windowId);
+  attachSidebar(requireCurrentPane().windowId);
 }
 
 export function hideSidebar(): void {
-  hideSidebarForSession(requireCurrentPane().sessionName);
+  const panes = listPanes();
+  for (const paneId of sidebarPanes(panes)) killPane(paneId);
+  uninstallFollowHooks();
+  unsetServerOption(SIDEBAR_PANE_OPTION);
+  clearPerSessionState(panes);
 }
 
-function hideSidebarForSession(sessionName: string): void {
-  for (const paneId of sidebarPanesToKill(sessionName)) killPane(paneId);
-  unsetSessionHook(sessionName, SIDEBAR_HOOK_INDEX);
-  unsetSessionOption(sessionName, SIDEBAR_PANE_OPTION);
-}
-
-// 끄고 켜는 기준은 "지금 보는 창에 사이드바가 있는가"다. 세션에만 있고 창에 없으면
-// 사용자 눈에는 없는 것이니, 끄지 말고 이 창으로 데려온다.
+// 끄고 켜는 기준은 "지금 보는 창에 사이드바가 있는가"다. 다른 곳에만 있으면 사용자 눈에는 없는 것이니,
+// 끄지 말고 이 창으로 데려온다.
 export function toggleSidebar(): void {
   const pane = requireCurrentPane();
   if (sidebarPanesInWindow(listPanes(), pane.windowId).length > 0) {
-    hideSidebarForSession(pane.sessionName);
+    hideSidebar();
   } else {
-    attachSidebar(pane.sessionName, pane.windowId);
+    attachSidebar(pane.windowId);
   }
 }
 
-// TUI(q 키 등)가 스스로 종료할 때 자신이 속한 세션의 hook/옵션만 정리한다.
+// TUI(q 키 등)가 스스로 종료할 때 부른다. 다른 사이드바가 남아 있으면 그쪽으로 넘긴다. 여기서 hook을
+// 걷어 버리면 남은 사이드바가 주인 없는 채로 떠 있다가 다음에 열 때 하나 더 생긴다.
 export function cleanupFromTui(): void {
   let pane;
   try {
@@ -150,13 +163,11 @@ export function cleanupFromTui(): void {
   } catch {
     return;
   }
-  // 같은 세션에 다른 사이드바가 남아 있으면 그쪽으로 넘긴다. 여기서 옵션을 지워 버리면
-  // 남은 사이드바가 주인 없는 채로 떠 있다가 다음에 열 때 하나 더 생긴다.
-  const others = sidebarPanesInSession(pane.sessionName).filter((id) => id !== pane.paneId);
+  const others = sidebarPanes(listPanes()).filter((id) => id !== pane.paneId);
   if (others.length > 0) {
-    adoptSidebar(pane.sessionName, others);
+    adoptSidebar(others);
     return;
   }
-  unsetSessionHook(pane.sessionName, SIDEBAR_HOOK_INDEX);
-  unsetSessionOption(pane.sessionName, SIDEBAR_PANE_OPTION);
+  uninstallFollowHooks();
+  unsetServerOption(SIDEBAR_PANE_OPTION);
 }
