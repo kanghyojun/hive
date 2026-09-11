@@ -31,7 +31,7 @@ import {
   type PaneInfo,
 } from "./tmux.js";
 import { attachSidebar } from "./sidebar.js";
-import { ensureDirs, logsDir, reposPath, selfCommand } from "./paths.js";
+import { ensureDirs, logsDir, reposPath, selfRelaunchArgv } from "./paths.js";
 import { shQuote } from "./sh.js";
 
 export { listWorktrees };
@@ -131,10 +131,9 @@ export interface OpenSessionOptions {
 }
 
 export function openWorktreeSession(opts: OpenSessionOptions): WtNewResult {
-  const [node, cli] = selfCommand();
   const runInitArgs = opts.script ? `${shQuote(opts.path)} ${shQuote(opts.script)}` : shQuote(opts.path);
-  const windowCommand =
-    opts.command ?? `${shQuote(node)} ${shQuote(cli)} wt run-init ${runInitArgs}; exec \${SHELL:-sh}`;
+  const runInit = [...selfRelaunchArgv(), "wt", "run-init"].map(shQuote).join(" ");
+  const windowCommand = opts.command ?? `${runInit} ${runInitArgs}; exec \${SHELL:-sh}`;
   // worktree 하나가 세션 하나다. 같은 세션에 window로 붙이면 브랜치를 오갈 때마다 window 목록이 섞인다.
   // 지금 보고 있는 window와 같은 크기로 열지 않으면, 나중에 클라이언트가 붙을 때 tmux가 pane을 비율로
   // 늘려서 사이드바가 화면 절반을 차지한다(tmux.ts의 windowSize 주석 참고).

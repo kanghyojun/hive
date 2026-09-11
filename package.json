@@ -10,7 +10,7 @@
     "node": ">=22.12"
   },
   "scripts": {
-    "dev": "tsx src/cli.tsx",
+    "dev": "NODE_ENV=development tsx src/cli.tsx",
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
     "test": "vitest run"

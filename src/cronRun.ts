@@ -6,7 +6,7 @@ import { planCronTick, readCronConfig, type CronJob } from "./cron.js";
 import { renderTemplate } from "./cronSpec.js";
 import { processStart, type Db } from "./db.js";
 import { resolveRepo, worktreeAdd } from "./git.js";
-import { cronLogPath, ensureDirs, hiveHome, selfCommand } from "./paths.js";
+import { cronLogPath, ensureDirs, hiveHome, selfRelaunchArgv } from "./paths.js";
 import { shQuote } from "./sh.js";
 import { listPanes, newWindow, serverInfo, serverKey, socketPath } from "./tmux.js";
 import { findInitScript, openWorktreeSession, rememberRepo, windowsInWorktree, worktreePathFor } from "./worktree.js";
@@ -44,8 +44,7 @@ function initPrefixFor(job: CronJob, cwd: string): string | undefined {
   if (job.worktree.mode !== "new" || !job.worktree.init) return undefined;
   const script = findInitScript(cwd);
   if (!script) return undefined;
-  const [node, cli] = selfCommand();
-  return `${shQuote(node)} ${shQuote(cli)} wt run-init ${shQuote(cwd)} ${shQuote(script)}`;
+  return [...selfRelaunchArgv(), "wt", "run-init", cwd, script].map(shQuote).join(" ");
 }
 
 // 그 worktree에 이미 창이 있으면 같은 세션에 창만 하나 더 붙인다. 없으면 세션을 새로 연다.
@@ -123,8 +122,8 @@ export interface CronTickResult {
 // 수집기는 claim만 하고 실제 실행은 떼어낸 자식에게 맡긴다. git worktree add와 tmux new-session은
 // 전부 동기 호출이라 수집 tick 안에서 부르면 그동안 새 상태를 발행하지 못한다.
 function spawnRunner(jobId: string, fireAt: number, runId: number): void {
-  const [node, cli] = selfCommand();
-  const args = [...process.execArgv, cli, "--home", hiveHome()];
+  const [node, ...args] = selfRelaunchArgv();
+  args.push("--home", hiveHome());
   const socket = socketPath();
   if (socket) args.push("--tmux-socket", socket);
   args.push("cron", "run", jobId, "--fire-at", String(fireAt), "--claim", String(runId));

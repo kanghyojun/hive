@@ -327,7 +327,12 @@ export function newSession(opts: { name: string; cwd: string; command: string; s
   return { sessionName, windowId };
 }
 
-export function splitLeft(opts: { target: string; width: number; command: string }): string {
+export function splitLeft(
+  opts: { target: string; width: number; command: string; env?: Record<string, string> }
+): string {
+  // 환경변수는 command 문자열에 끼워 넣지 않고 -e로 넘긴다. 명령은 셸이 해석하지만
+  // -e는 tmux가 pane 환경에 직접 넣어 줘서 인용을 신경 쓸 필요가 없다.
+  const envArgs = Object.entries(opts.env ?? {}).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
   return tmux([
     "split-window",
     "-hb",
@@ -337,6 +342,7 @@ export function splitLeft(opts: { target: string; width: number; command: string
     "-P",
     "-F",
     "#{pane_id}",
+    ...envArgs,
     "-t",
     opts.target,
     opts.command,

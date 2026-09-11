@@ -16,7 +16,7 @@ import {
   unsetSessionOption,
   type PaneInfo,
 } from "./tmux.js";
-import { canonicalHiveHome, selfCommand } from "./paths.js";
+import { canonicalHiveHome, selfRelaunchArgv } from "./paths.js";
 
 import { shQuote } from "./sh.js";
 
@@ -98,10 +98,18 @@ export function attachSidebar(sessionName: string, windowId: string): void {
     return;
   }
 
-  const [node, cli] = selfCommand();
-  const command = [node, ...process.execArgv, cli, "--home", canonicalHiveHome(),
+  // React는 런타임에 NODE_ENV로 dev/prod 빌드를 고른다. tsc는 이 분기를 치환하지 않으므로
+  // 여기서 붙이지 않으면 dev 빌드가 매 렌더 performance.measure를 쌓아 메모리가 계속 는다(실측).
+  // 지금 프로세스 값을 그대로 물려줘서 개발 중(pnpm dev)에는 dev 빌드의 경고를 그대로 본다.
+  const nodeEnv = process.env.NODE_ENV ?? "production";
+  const command = [...selfRelaunchArgv(), "--home", canonicalHiveHome(),
     "--tmux-socket", serverInfo().socketPath, "tui"].map(shQuote).join(" ");
-  const sidebarPaneId = splitLeft({ target: windowId, width: SIDEBAR_WIDTH, command });
+  const sidebarPaneId = splitLeft({
+    target: windowId,
+    width: SIDEBAR_WIDTH,
+    command,
+    env: { NODE_ENV: nodeEnv },
+  });
 
   setPaneOption(sidebarPaneId, SIDEBAR_MARK_OPTION, "1");
   setSessionOption(sessionName, SIDEBAR_PANE_OPTION, sidebarPaneId);

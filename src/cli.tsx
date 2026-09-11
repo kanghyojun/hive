@@ -20,7 +20,7 @@ import {
   codexHookScriptPath,
   hookScriptPath,
   logsDir,
-  selfCommand,
+  cliEntryPath,
   setHiveHomeOverride,
   spoolDir,
 } from "./paths.js";
@@ -676,9 +676,8 @@ program
   .command("paths")
   .description("hive가 쓰는 절대경로 출력 (README 스니펫 채우기용)")
   .action(() => {
-    const [node, cli] = selfCommand();
-    console.log(`execPath\t${node}`);
-    console.log(`cli\t${cli}`);
+    console.log(`execPath\t${process.execPath}`);
+    console.log(`cli\t${cliEntryPath()}`);
     console.log(`hookScript\t${hookScriptPath()}`);
     console.log(`codexHookScript\t${codexHookScriptPath()}`);
     console.log(`hiveHome\t${hiveHome()}`);

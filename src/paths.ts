@@ -68,8 +68,28 @@ export function cliEntryPath(): string {
   );
 }
 
-export function selfCommand(): [string, string] {
-  return [process.execPath, cliEntryPath()];
+// 자식에게 물려줄 수 있는 건 로더 계열뿐이다. --inspect는 자식이 같은 포트를 잡으려다 죽고,
+// --eval이나 --heapsnapshot-signal은 자식이 물려받을 이유가 없다. 그래서 허용 목록으로 거른다.
+const LOADER_FLAGS = new Set(["--require", "-r", "--import", "--loader", "--experimental-loader"]);
+
+function loaderArgv(): string[] {
+  const out: string[] = [];
+  for (let i = 0; i < process.execArgv.length; i++) {
+    const arg = process.execArgv[i];
+    const eq = arg.indexOf("=");
+    if (!LOADER_FLAGS.has(eq === -1 ? arg : arg.slice(0, eq))) continue;
+    out.push(arg);
+    // "--require X"처럼 값이 다음 토큰에 오는 형태면 그것까지 가져온다.
+    if (eq === -1 && i + 1 < process.execArgv.length) out.push(process.execArgv[++i]);
+  }
+  return out;
+}
+
+// tmux pane이나 자식 프로세스로 자기 자신을 다시 띄울 때 쓰는 argv.
+// 호출부마다 따로 조립하면 execArgv를 넘기는 곳과 빠뜨리는 곳이 갈려서(실측) 여기로 모았다.
+// 개발 중에는 tsx 로더가 함께 실려 cliEntryPath()가 가리키는 src/cli.tsx가 그대로 뜬다.
+export function selfRelaunchArgv(entry: string = cliEntryPath()): string[] {
+  return [process.execPath, ...loaderArgv(), entry];
 }
 
 export function ensureDirs(): void {

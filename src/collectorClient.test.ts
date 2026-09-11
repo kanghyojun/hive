@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { CollectorClient, type CollectorStatus } from "./collectorClient.js";
 import { encodeMessage, type CollectorSnapshot } from "./collectorProtocol.js";
+import { collectorEntryPath, selfRelaunchArgv } from "./paths.js";
 import { createConnection } from "node:net";
 import { spawn } from "node:child_process";
 
@@ -94,7 +95,8 @@ describe("수집기 client 복구와 요청 수명", () => {
     sockets[0].emit("error", Object.assign(new Error("없음"), { code: "ENOENT" }));
     sockets[0].destroy();
     expect(spawn).toHaveBeenCalledOnce();
-    expect(vi.mocked(spawn).mock.calls[0][1]).toEqual(expect.arrayContaining([...process.execArgv, "--home", home, "--server", JSON.stringify(server)]));
+    expect(vi.mocked(spawn).mock.calls[0][1]).toEqual(expect.arrayContaining(
+      [...selfRelaunchArgv(collectorEntryPath()).slice(1), "--home", home, "--server", JSON.stringify(server)]));
     client.setUsageInterest(true);
     vi.advanceTimersByTime(1000);
     const socket = connected();

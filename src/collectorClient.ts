@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { createConnection, type Socket } from "node:net";
-import { canonicalHiveHome, collectorEntryPath, collectorSocketPath } from "./paths.js";
+import { canonicalHiveHome, collectorEntryPath, collectorSocketPath, selfRelaunchArgv } from "./paths.js";
 import { currentPaneId, serverInfo, serverKey, type ServerInfo } from "./tmux.js";
 import { encodeMessage, isServerInfo, NdjsonDecoder, PROTOCOL_VERSION, SNAPSHOT_STALE_MS,
   type CollectorCommand, type CollectorMessage, type CollectorSnapshot } from "./collectorProtocol.js";
@@ -149,8 +149,9 @@ export class CollectorClient {
 
   private spawnCollector(server: ServerInfo): void {
     this.lastSpawn = Date.now();
-    const child = spawn(process.execPath, [...process.execArgv, collectorEntryPath(),
-      "--home", this.home, "--server", JSON.stringify(server)], { detached: true, stdio: "ignore" });
+    const [node, ...args] = selfRelaunchArgv(collectorEntryPath());
+    const child = spawn(node, [...args, "--home", this.home, "--server", JSON.stringify(server)],
+      { detached: true, stdio: "ignore" });
     child.on("error", (err) => { this.connectionError = err.message; this.reportStatus(); });
     child.unref();
   }
